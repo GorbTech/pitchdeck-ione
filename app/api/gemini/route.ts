@@ -184,6 +184,16 @@ If YES, classify it:
 TYPE (exactly one): GRANT | VC | CVC | FAMILY_OFFICE | BANK | STRATEGIC | GOVERNMENT
 FOCUS (exactly one): DEEP_TECH | CLIMATE | DEFENCE | ENERGY | INDUSTRIAL | INFRASTRUCTURE | SOCIAL_IMPACT
 
+FOCUS PRIORITY (CRITICAL!):
+If the organization invests in MULTIPLE areas, use this priority order:
+1. DEFENCE — if they mention: defence, military, security, dual-use, NATO, sovereignty → choose DEFENCE
+2. CLIMATE — if they mention: CO2, emissions, climate, decarbonization → choose CLIMATE
+3. ENERGY — if they mention: energy, grid, renewables, storage → choose ENERGY
+4. DEEP_TECH — if they mention: AI, deep tech, frontier tech → choose DEEP_TECH
+5. Others as fallback
+
+Example: "invests in defence, energy and infrastructure" → DEFENCE (highest priority)
+
 VALID COMBINATIONS:
 - GRANT: DEEP_TECH, CLIMATE, DEFENCE, ENERGY, INFRASTRUCTURE, SOCIAL_IMPACT
 - VC: any focus
