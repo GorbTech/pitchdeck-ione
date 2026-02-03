@@ -377,7 +377,7 @@ function buildGreeting(orgName: string, ceo: string | null, type: OrgType, focus
   return greeting;
 }
 
-type Stage = 'init' | 'present' | 'asking' | 'researching' | 'hero' | 'topics' | 'presenting';
+type Stage = 'init' | 'present' | 'asking' | 'researching' | 'confirming' | 'hero' | 'topics' | 'presenting';
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>('init');
@@ -571,10 +571,20 @@ export default function Home() {
     return { name, thesis: 'innovative technology solutions' };
   };
 
+  // Store pending info for UNCERTAIN confirmation
+  const [pendingInfo, setPendingInfo] = useState<{
+    name: string;
+    type: OrgType;
+    focus: OrgFocus;
+    ceo: string | null;
+    thesis: string;
+  } | null>(null);
+
   const handleSubmit = async () => {
     if (!input.trim()) return;
     setStage('researching');
     setIsLoading(true);
+    setPendingInfo(null);
     const analyzingText = "Analyzing your organization...";
     setRobotText(analyzingText);
     if (voiceEnabled) {
@@ -587,25 +597,35 @@ export default function Home() {
     try {
       const info = await researchFund(input);
 
+      // Handle REJECTED status
+      if (info.status === 'REJECTED') {
+        const rejectText = info.message || `"${input}" is not identified as a potential investment partner.\n\nPlease enter a valid organization.`;
+        setRobotText(rejectText);
+        setDisplayedText(rejectText);
+        setStage('asking');
+        setInput('');
+        setIsLoading(false);
+        return;
+      }
+
       // Store classification
       const type = (info.type as OrgType) || 'VC';
       const focus = (info.focus as OrgFocus) || 'DEEP_TECH';
-      setOrgType(type);
-      setOrgFocus(focus);
-      setOrgInfo({ name: info.name, ceo: info.ceo, thesis: info.thesis });
 
-      // Build personalized greeting
-      const greeting = buildGreeting(info.name, info.ceo, type, focus);
-
-      // Show hero screen
-      setStage('hero');
-      setRobotText(greeting);
-      if (voiceEnabled) {
-        setDisplayedText('');
-        speak(greeting);
-      } else {
-        setDisplayedText(greeting);
+      // Handle UNCERTAIN status - ask for confirmation
+      if (info.status === 'UNCERTAIN') {
+        setPendingInfo({ name: info.name, type, focus, ceo: info.ceo, thesis: info.thesis });
+        const confirmText = `We identified "${info.name}" as ${type.replace('_', ' ')}.\n\nIs this correct?`;
+        setRobotText(confirmText);
+        setDisplayedText(confirmText);
+        setStage('confirming');
+        setIsLoading(false);
+        return;
       }
+
+      // OK status - proceed normally
+      proceedWithOrg(info.name, type, focus, info.ceo, info.thesis);
+
     } catch {
       setOrgType('VC');
       setOrgFocus('DEEP_TECH');
@@ -616,6 +636,41 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const proceedWithOrg = (name: string, type: OrgType, focus: OrgFocus, ceo: string | null, thesis: string) => {
+    setOrgType(type);
+    setOrgFocus(focus);
+    setOrgInfo({ name, ceo, thesis });
+
+    // Build personalized greeting
+    const greeting = buildGreeting(name, ceo, type, focus);
+
+    // Show hero screen
+    setStage('hero');
+    setRobotText(greeting);
+    if (voiceEnabled) {
+      setDisplayedText('');
+      speak(greeting);
+    } else {
+      setDisplayedText(greeting);
+    }
+  };
+
+  const confirmOrg = () => {
+    if (pendingInfo) {
+      proceedWithOrg(pendingInfo.name, pendingInfo.type, pendingInfo.focus, pendingInfo.ceo, pendingInfo.thesis);
+      setPendingInfo(null);
+    }
+  };
+
+  const rejectOrg = () => {
+    setPendingInfo(null);
+    setInput('');
+    const retryText = "No problem.\n\nPlease enter your organization name.";
+    setRobotText(retryText);
+    setDisplayedText(retryText);
+    setStage('asking');
   };
 
   const goToTopics = () => {
@@ -1165,6 +1220,26 @@ export default function Home() {
                 />
                 <button onClick={handleSubmit} disabled={stage === 'researching' || !input.trim()} className="absolute right-1 w-12 h-12 bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-30 rounded-full flex items-center justify-center">
                   <Send size={20} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Confirmation buttons for UNCERTAIN status */}
+          {stage === 'confirming' && (
+            <div className="w-full max-w-md mb-8">
+              <div className="flex gap-4">
+                <button
+                  onClick={confirmOrg}
+                  className="flex-1 py-4 bg-zinc-900 text-white text-lg font-medium hover:bg-zinc-800 rounded-full transition-colors"
+                >
+                  Yes, correct
+                </button>
+                <button
+                  onClick={rejectOrg}
+                  className="flex-1 py-4 bg-white text-zinc-900 text-lg font-medium border-2 border-zinc-300 hover:border-zinc-500 rounded-full transition-colors"
+                >
+                  No, re-enter
                 </button>
               </div>
             </div>
