@@ -631,7 +631,8 @@ export default function Home() {
     setStage('presenting');
     const text = TOPIC_TEXT[id];
     setRobotText(text);
-    if (voiceEnabled) {
+    // Skip audio for 'tech' - TechDemo handles its own audio
+    if (voiceEnabled && id !== 'tech') {
       setDisplayedText('');
       speakCached(id);
     } else {
