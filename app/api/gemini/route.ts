@@ -35,6 +35,7 @@ const WHITELIST: Record<string, { name: string; type: string; focus: string; ceo
   // VC + DEFENCE
   'nato innovation fund': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE', ceo: 'Andrea Traversone', thesis: 'Deep tech for defence and security' },
   'nato if': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE', ceo: 'Andrea Traversone', thesis: 'Deep tech for defence and security' },
+  'decisive point': { name: 'Decisive Point', type: 'VC', focus: 'DEFENCE', ceo: 'John Walters', thesis: 'Critical technologies for defence, energy and infrastructure' },
 
   // VC + ENERGY
   'set ventures': { name: 'SET Ventures', type: 'VC', focus: 'ENERGY', ceo: 'Rene Savelsberg', thesis: 'Energy transition venture capital' },
