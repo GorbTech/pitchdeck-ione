@@ -46,3 +46,7 @@ coverage/
 # Misc
 *.pem
 *.log
+
+# Large video files
+public/222-looped.mp4
+public/backup-4k/slide4-bg.mp4
