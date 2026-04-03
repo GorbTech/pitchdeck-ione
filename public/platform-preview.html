@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Platform Overview - Scene Preview</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #888;
+        }
+
+        .scene-container {
+            display: flex;
+            flex-direction: column;
+            gap: 40px;
+            max-width: 1920px;
+            margin: 0 auto;
+        }
+
+        .scene {
+            background: white;
+            width: 1920px;
+            height: 1080px;
+            position: relative;
+            overflow: hidden;
+            transform: scale(0.5);
+            transform-origin: top left;
+            margin-bottom: -540px;
+        }
+
+        .scene-label {
+            background: #333;
+            color: #0ff;
+            padding: 10px 20px;
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: inline-block;
+        }
+
+        .scene-wrapper {
+            margin-bottom: 20px;
+        }
+
+        /* Scene elements */
+        .robot {
+            position: absolute;
+            height: 600px;
+            left: 100px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .image-right {
+            position: absolute;
+            height: 700px;
+            right: 100px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .image-center {
+            position: absolute;
+            height: 800px;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .text-bottom {
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            color: #333;
+            font-size: 40px;
+            font-weight: 300;
+        }
+
+        .text-right {
+            position: absolute;
+            right: 150px;
+            bottom: 150px;
+            text-align: right;
+            color: #333;
+            font-size: 36px;
+            font-weight: 300;
+        }
+
+        .text-line {
+            margin-bottom: 10px;
+        }
+
+        /* Navigation */
+        .nav {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+
+        .nav button {
+            padding: 10px 20px;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .nav button:hover {
+            background: #555;
+        }
+
+        .nav button.active {
+            background: #0088ff;
+            border-color: #0088ff;
+        }
+
+        /* Fullscreen mode */
+        .fullscreen-view {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+            z-index: 1000;
+        }
+
+        .fullscreen-view.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .fullscreen-scene {
+            width: 1920px;
+            height: 1080px;
+            position: relative;
+            transform-origin: center;
+        }
+
+        .close-fullscreen {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: #333;
+            color: white;
+            border: none;
+            cursor: pointer;
+            z-index: 1001;
+            font-size: 16px;
+        }
+
+        .scene-nav {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 1001;
+        }
+
+        .scene-nav button {
+            padding: 15px 30px;
+            background: #333;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Platform Overview - Scene Preview</h1>
+
+    <div class="nav">
+        <button onclick="showAll()">All Scenes</button>
+        <button onclick="openFullscreen(1)">Scene 1</button>
+        <button onclick="openFullscreen(2)">Scene 2</button>
+        <button onclick="openFullscreen(3)">Scene 3</button>
+        <button onclick="openFullscreen(4)">Scene 4</button>
+    </div>
+
+    <div class="scene-container" id="allScenes">
+        <!-- Scene 1 -->
+        <div class="scene-wrapper">
+            <div class="scene-label">SCENE 1: R1 + Robot + Text (右側)</div>
+            <div class="scene" id="scene1-preview">
+                <img src="/RoboPitch.png" class="robot" alt="Robot">
+                <img src="/platform/R1.png" class="image-right" alt="R1">
+                <div class="text-right">
+                    <div class="text-line">iONE: Universal Green Energy Platform</div>
+                    <div class="text-line">Driven by Predictive AI</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scene 2 -->
+        <div class="scene-wrapper">
+            <div class="scene-label">SCENE 2: R2 + Text (中央)</div>
+            <div class="scene" id="scene2-preview">
+                <img src="/platform/R2.png" class="image-center" alt="R2">
+                <div class="text-bottom">
+                    <div class="text-line">A vertically integrated ecosystem</div>
+                    <div class="text-line">uniting standardized hardware</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scene 3 -->
+        <div class="scene-wrapper">
+            <div class="scene-label">SCENE 3: R3 → D3 → ESS (переход)</div>
+            <div class="scene" id="scene3-preview">
+                <img src="/platform/R3.png" class="image-center" style="opacity: 0.4;" alt="R3">
+                <img src="/products/D3.png" class="image-center" style="height: 600px; opacity: 0.4;" alt="D3">
+                <img src="/platform/ESS.png" class="image-center" style="height: 700px;" alt="ESS">
+                <div class="text-bottom">
+                    <div class="text-line">Autonomous Stations → and Home Storage Station</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scene 4 -->
+        <div class="scene-wrapper">
+            <div class="scene-label">SCENE 4: R1 + EaaS Text</div>
+            <div class="scene" id="scene4-preview">
+                <img src="/platform/R1.png" class="image-center" style="height: 700px;" alt="R1">
+                <div class="text-bottom">
+                    <div class="text-line">with predictive analytics to guarantee Uptime</div>
+                    <div class="text-line">via the Energy-as-a-Service (EaaS) model</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen view -->
+    <div class="fullscreen-view" id="fullscreenView">
+        <button class="close-fullscreen" onclick="closeFullscreen()">✕ Close</button>
+        <div class="fullscreen-scene" id="fullscreenScene"></div>
+        <div class="scene-nav">
+            <button onclick="prevScene()">← Previous</button>
+            <button onclick="nextScene()">Next →</button>
+        </div>
+    </div>
+
+    <script>
+        let currentScene = 1;
+        const totalScenes = 4;
+
+        function openFullscreen(sceneNum) {
+            currentScene = sceneNum;
+            const scene = document.getElementById(`scene${sceneNum}-preview`);
+            const fullscreen = document.getElementById('fullscreenScene');
+            fullscreen.innerHTML = scene.innerHTML;
+            document.getElementById('fullscreenView').classList.add('active');
+
+            // Scale to fit viewport
+            const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+            fullscreen.style.transform = `scale(${scale})`;
+        }
+
+        function closeFullscreen() {
+            document.getElementById('fullscreenView').classList.remove('active');
+        }
+
+        function nextScene() {
+            currentScene = currentScene < totalScenes ? currentScene + 1 : 1;
+            openFullscreen(currentScene);
+        }
+
+        function prevScene() {
+            currentScene = currentScene > 1 ? currentScene - 1 : totalScenes;
+            openFullscreen(currentScene);
+        }
+
+        function showAll() {
+            closeFullscreen();
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (document.getElementById('fullscreenView').classList.contains('active')) {
+                if (e.key === 'ArrowRight' || e.key === ' ') nextScene();
+                if (e.key === 'ArrowLeft') prevScene();
+                if (e.key === 'Escape') closeFullscreen();
+            }
+        });
+    </script>
+</body>
+</html>

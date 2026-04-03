@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 
 interface Station {
@@ -181,6 +181,24 @@ export default function MissionControl() {
         {/* Map Area */}
         <div className="relative border-r border-white/10">
           <svg viewBox="0 0 1000 640" className="w-full h-full" preserveAspectRatio="xMidYMid slice">
+            {/* Gradient definitions for data flow lines */}
+            <defs>
+              <linearGradient id="dataFlowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="rgba(0,255,255,0)" />
+                <stop offset="70%" stopColor="rgba(0,255,255,0.3)" />
+                <stop offset="100%" stopColor="rgba(0,255,255,1)" />
+              </linearGradient>
+              <linearGradient id="dataFlowGradientGreen" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="rgba(43,255,136,0)" />
+                <stop offset="70%" stopColor="rgba(43,255,136,0.3)" />
+                <stop offset="100%" stopColor="rgba(43,255,136,1)" />
+              </linearGradient>
+              <filter id="glowCyan" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+            </defs>
+
             {/* Grid lines */}
             {Array.from({ length: 11 }).map((_, i) => (
               <line key={`v${i}`} x1={i * 100} y1={0} x2={i * 100} y2={640} stroke="rgba(255,255,255,0.06)" />
@@ -202,6 +220,36 @@ export default function MissionControl() {
 
             <rect x={640} y={400} width={260} height={160} rx={14} fill="rgba(90,162,255,0.06)" stroke="rgba(90,162,255,0.2)" strokeDasharray="5 6" />
             <text x={654} y={420} fill="rgba(255,255,255,0.5)" fontSize={11} fontFamily="monospace">FIELD BLOCK B</text>
+
+            {/* Static connection lines to server (no animation) */}
+            {stations.filter(s => s.status !== 'offline').map((s) => (
+              <line
+                key={`line-${s.id}`}
+                x1={s.x} y1={s.y}
+                x2={120} y2={520}
+                stroke="rgba(0,255,255,0.04)"
+                strokeWidth={1}
+              />
+            ))}
+
+            {/* Central Server */}
+            <g transform="translate(120,520)">
+              <rect x={-30} y={-20} width={60} height={40} rx={6} fill="rgba(0,0,0,0.8)" stroke="rgba(0,255,255,0.6)" strokeWidth={2} />
+              <rect x={-24} y={-14} width={48} height={6} rx={2} fill="rgba(0,255,255,0.3)" />
+              <rect x={-24} y={-4} width={48} height={6} rx={2} fill="rgba(0,255,255,0.3)" />
+              <rect x={-24} y={6} width={48} height={6} rx={2} fill="rgba(0,255,255,0.3)" />
+              {/* Blinking LEDs */}
+              <circle cx={-18} cy={-11} r={2} fill="#2bff88">
+                <animate attributeName="opacity" values="1;0.3;1" dur="0.8s" repeatCount="indefinite" />
+              </circle>
+              <circle cx={-18} cy={-1} r={2} fill="#2bff88">
+                <animate attributeName="opacity" values="1;0.3;1" dur="1.1s" repeatCount="indefinite" />
+              </circle>
+              <circle cx={-18} cy={9} r={2} fill="#5aa2ff">
+                <animate attributeName="opacity" values="1;0.3;1" dur="0.6s" repeatCount="indefinite" />
+              </circle>
+              <text x={0} y={32} textAnchor="middle" fill="rgba(255,255,255,0.7)" fontSize={10} fontFamily="monospace">DATACENTER</text>
+            </g>
 
             {/* Stations */}
             {stations.map(s => (

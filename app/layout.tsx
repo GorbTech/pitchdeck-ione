@@ -11,6 +11,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://gtlab.org'),
   title: 'iONE | Autonomous Energy Platform',
   description: 'AI-Powered Autonomous Solar Power Platform. Zero emissions. Silent operation. Edge AI intelligence.',
   keywords: ['solar', 'autonomous', 'energy', 'AI', 'cleantech', 'defence', 'iONE'],
@@ -18,8 +19,8 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'iONE | Autonomous Energy Platform',
     description: 'AI-Powered Autonomous Solar Power Platform by GT GmbH',
-    url: 'https://pitchdeck.gtlab.org',
-    siteName: 'iONE Pitch Deck',
+    url: 'https://gtlab.org',
+    siteName: 'iONE | GT GmbH',
     type: 'website',
     images: [{ url: '/RoboPitch.png', width: 512, height: 512, alt: 'iONE Robot' }],
   },

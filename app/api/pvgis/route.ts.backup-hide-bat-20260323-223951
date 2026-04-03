@@ -1,0 +1,2584 @@
+import { NextRequest, NextResponse } from 'next/server';
+import Database from 'better-sqlite3';
+import path from 'path';
+
+// === New Sizing Engine (v4) ===
+import { getHourlyClimateYear, detectZoneFromClimate } from './engine/climate';
+import { classifyLoad as classifyLoadV4, getLoadProfile } from './engine/loadProfiles';
+import { simulateYear } from './engine/simulation';
+import { optimize } from './engine/optimizer';
+import {
+  SiteInput, SizingEngineOutput,
+  RELIABILITY_POLICIES, ENGINE_CONSTANTS,
+  type LoadPattern, type ScenarioMode,
+} from './engine/types';
+
+const DB_PATH = path.join(process.cwd(), '../gt-energy-platform/admin/database/admin.db');
+
+interface DBComponent {
+  id: number;
+  name: string;
+  category: string;
+  price: number;
+  currency: string;
+  origin: string;
+  tier: string;
+}
+
+// Get component from database by category and origin preference
+function getComponent(category: string, originPref: 'EU' | 'World'): DBComponent | null {
+  try {
+    const db = new Database(DB_PATH, { readonly: true });
+    let query = 'SELECT * FROM components WHERE category = ? AND price > 0';
+    const params: string[] = [category];
+
+    if (originPref === 'EU') {
+      query += ' AND origin = ?';
+      params.push('EU');
+    }
+
+    // Choose by lowest price first (industrial is cheaper than prototype/Victron)
+    query += ' ORDER BY price ASC LIMIT 1';
+
+    const comp = db.prepare(query).get(...params) as DBComponent | undefined;
+    db.close();
+    return comp || null;
+  } catch {
+    return null;
+  }
+}
+
+// Get price in USD (convert EUR if needed)
+function getPriceUSD(comp: DBComponent | null, fallback: number): number {
+  if (!comp || comp.price <= 0) return fallback;
+  // EUR to USD ~1.08
+  return comp.currency === 'EUR' ? Math.round(comp.price * 1.08) : comp.price;
+}
+
+// PVGIS API - European Commission JRC
+// https://re.jrc.ec.europa.eu/api/
+// For 2-axis tracking, use seriescalc with trackingtype=2
+
+const PVGIS_BASE = 'https://re.jrc.ec.europa.eu/api/v5_2';
+
+interface HourlyData {
+  time: string;
+  P: number;        // PV power output (W)
+  'G(i)': number;   // Global irradiance on the inclined plane (W/m²)
+  H_sun: number;    // Sun height (degrees)
+  'T2m': number;    // 2-meter air temperature (°C)
+  WS10m: number;    // 10-meter wind speed (m/s)
+  Int: number;      // 1 = sun is up, 0 = sun below horizon
+}
+
+interface MonthlyAggregate {
+  month: number;
+  E_d: number;      // Daily energy (kWh/day)
+  E_m: number;      // Monthly energy (kWh/month)
+  H_d: number;      // Daily irradiation (kWh/m²/day)
+  H_m: number;      // Monthly irradiation (kWh/m²/month)
+  avgTemp: number;  // Average temperature
+  avgWind: number;  // Average wind speed (m/s)
+  windProduction: number;  // Wind turbine daily production (kWh/day)
+}
+
+// Calculate VAWT 500W production based on wind speed
+// H-Darrieus vertical axis wind turbine specs:
+// - Rated power: 500W at 12 m/s
+// - Cut-in: 2.5 m/s
+// - Rotor: 1.2m diameter × 2m height = 2.4 m² swept area
+// - Cp (power coefficient): ~0.35 for Darrieus
+function calculateWindPower(windSpeed: number): number {
+  const CUT_IN = 2.5;    // m/s
+  const RATED = 12;      // m/s
+  const CUT_OUT = 25;    // m/s
+  const RATED_POWER = 500; // W
+
+  // Air density at sea level
+  const RHO = 1.225; // kg/m³
+  // Swept area
+  const A = 2.4; // m²
+  // Power coefficient
+  const CP = 0.35;
+
+  if (windSpeed < CUT_IN || windSpeed > CUT_OUT) {
+    return 0;
+  }
+
+  if (windSpeed >= RATED) {
+    return RATED_POWER;
+  }
+
+  // Cubic power curve: P = 0.5 × ρ × A × Cp × V³
+  const power = 0.5 * RHO * A * CP * Math.pow(windSpeed, 3);
+  return Math.min(power, RATED_POWER);
+}
+
+// Calculate daily wind energy production (kWh/day)
+// Based on real VAWT 500W power curve data
+function calculateDailyWindEnergy(avgWindSpeed: number): number {
+  // Power curve data points: [wind speed m/s, power W, daily kWh]
+  // 3 м/с → 12W → 0.3 kWh/day — бесполезно
+  // 4 м/с → 28W → 0.7 kWh/day — символически
+  // 5 м/с → 55W → 1.3 kWh/day — минимально
+  // 6 м/с → 94W → 2.3 kWh/day — начинает работать
+  // 8 м/с → 224W → 5.4 kWh/day — существенный вклад
+  // 10 м/с → 437W → 10.5 kWh/day — серьёзная генерация
+  // 12 м/с → 756W → 18.1 kWh/day — полная мощность
+
+  const powerCurve = [
+    { speed: 0, daily: 0 },
+    { speed: 2.5, daily: 0 },    // cut-in
+    { speed: 3, daily: 0.3 },
+    { speed: 4, daily: 0.7 },
+    { speed: 5, daily: 1.3 },
+    { speed: 6, daily: 2.3 },
+    { speed: 8, daily: 5.4 },
+    { speed: 10, daily: 10.5 },
+    { speed: 12, daily: 18.1 },  // rated power
+    { speed: 25, daily: 18.1 },  // cut-out (same as rated)
+  ];
+
+  // Interpolate between data points
+  if (avgWindSpeed <= powerCurve[0].speed) return 0;
+  if (avgWindSpeed >= powerCurve[powerCurve.length - 1].speed) return powerCurve[powerCurve.length - 1].daily;
+
+  for (let i = 0; i < powerCurve.length - 1; i++) {
+    const p1 = powerCurve[i];
+    const p2 = powerCurve[i + 1];
+    if (avgWindSpeed >= p1.speed && avgWindSpeed < p2.speed) {
+      // Linear interpolation
+      const ratio = (avgWindSpeed - p1.speed) / (p2.speed - p1.speed);
+      return p1.daily + ratio * (p2.daily - p1.daily);
+    }
+  }
+
+  return 0;
+}
+
+// === V2 FUNCTIONS ===
+
+// Load class determination
+interface LoadClass {
+  class: 'micro' | 'light' | 'standard' | 'heavy';
+  autonomyDaysTarget: number;
+  peakDemandW: number;
+  description: string;
+}
+
+function determineLoadClass(dailyKwh: number, consumptionW: number, hoursPerDay: number): LoadClass {
+  if (dailyKwh <= 2) {
+    return { class: 'micro', autonomyDaysTarget: 5, peakDemandW: consumptionW, description: 'Micro load (sensors, IoT)' };
+  } else if (dailyKwh <= 8) {
+    return { class: 'light', autonomyDaysTarget: 3, peakDemandW: consumptionW, description: 'Light load (telecom, lighting)' };
+  } else if (dailyKwh <= 25) {
+    return { class: 'standard', autonomyDaysTarget: 3, peakDemandW: consumptionW * 1.5, description: 'Standard load (site power, small pumps)' };
+  } else {
+    return { class: 'heavy', autonomyDaysTarget: 2, peakDemandW: consumptionW * 3, description: 'Heavy load (industrial pumps, motors)' };
+  }
+}
+
+// Battery usable capacity with derating
+interface BatteryDerating {
+  dod: number;
+  cold: number;
+  aging: number;
+  total: number;
+  usableKwh: number;
+}
+
+function getUsableBatteryCapacity(nameplateKwh: number, zone: string): BatteryDerating {
+  const dod = 0.90;  // 10% reserve
+  const cold = zone === 'arctic' ? 0.75 : zone === 'continental' ? 0.90 : 1.0;
+  const aging = 0.80; // 80% at end of life (~5000 cycles LFP)
+  const total = dod * cold * aging;
+  return { dod, cold, aging, total, usableKwh: nameplateKwh * total };
+}
+
+// Daily solar production from PVGIS seriescalc (365-day TMY)
+interface DailySeries {
+  dailyProduction: number[];  // 365 days, kWh per day for given peakPower
+  dailyWind10m: number[];     // 365 days, avg wind speed at 10m
+  available: boolean;
+}
+
+async function getPVGISDailySeries(lat: number, lon: number, peakPower: number, loss: number): Promise<DailySeries> {
+  try {
+    const url = `${PVGIS_BASE}/seriescalc?lat=${lat}&lon=${lon}&pvcalculation=1&peakpower=${peakPower}&loss=${loss}&trackingtype=2&outputformat=json`;
+    console.log('PVGIS seriescalc URL:', url);
+
+    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!response.ok) {
+      console.log('PVGIS seriescalc failed:', response.status);
+      return { dailyProduction: [], dailyWind10m: [], available: false };
+    }
+
+    const data = await response.json();
+    const hourly = data.outputs?.hourly;
+    if (!hourly || hourly.length === 0) {
+      return { dailyProduction: [], dailyWind10m: [], available: false };
+    }
+
+    // Aggregate hourly to daily
+    const dailyMap: Map<string, { prod: number; wind: number[]; }> = new Map();
+    for (const h of hourly) {
+      const timeStr = h['time'] as string; // format: "20050101:0010"
+      const dayKey = timeStr.substring(4, 8); // MMDD
+      const entry = dailyMap.get(dayKey) || { prod: 0, wind: [] };
+      entry.prod += (h.P || 0) / 1000; // W → kWh (hourly)
+      if (h.WS10m !== undefined) entry.wind.push(h.WS10m);
+      dailyMap.set(dayKey, entry);
+    }
+
+    // Count unique years in dataset to fix multi-year aggregation bug
+    const uniqueYears = new Set<string>();
+    for (const h of hourly) {
+      uniqueYears.add((h['time'] as string).substring(0, 4));
+    }
+    const yearCount = Math.max(1, uniqueYears.size);
+    console.log(`PVGIS seriescalc: ${uniqueYears.size} years detected, normalizing daily values`);
+
+    // Convert to ordered arrays (365 days) — DIVIDE by yearCount to get average
+    const sorted = Array.from(dailyMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const dailyProduction = sorted.map(([, v]) => v.prod / yearCount);
+    const dailyWind10m = sorted.map(([, v]) => v.wind.length > 0 ? v.wind.reduce((a, b) => a + b, 0) / v.wind.length : 0);
+
+    console.log(`PVGIS seriescalc: ${dailyProduction.length} days, avg ${(dailyProduction.reduce((a, b) => a + b, 0) / dailyProduction.length).toFixed(2)} kWh/day`);
+
+    return { dailyProduction, dailyWind10m, available: dailyProduction.length >= 360 };
+  } catch (error) {
+    console.error('PVGIS seriescalc error:', error);
+    return { dailyProduction: [], dailyWind10m: [], available: false };
+  }
+}
+
+// Find worst consecutive deficit run from daily data
+// Returns the max cumulative energy (kWh) that battery must bridge
+function findWorstDailyDeficitRun(
+  dailySolarProd: number[],   // kWh/day per station
+  dailyWindAvg: number[],     // m/s at 10m per day
+  dailyConsumption: number,   // kWh/day
+  stationCount: number,
+  useWindTurbine: boolean,
+  zone: string
+): number {
+  const days = dailySolarProd.length;
+  if (days === 0) return 0;
+
+  let worstDeficit = 0;
+
+  // Try all starting points (rolling year)
+  for (let start = 0; start < days; start++) {
+    let deficit = 0;
+    for (let j = 0; j < days; j++) {
+      const idx = (start + j) % days;
+      const solarProd = dailySolarProd[idx] * stationCount;
+      const windProd = useWindTurbine
+        ? calculateDailyWindEnergy(adjustWindForHeight(dailyWindAvg[idx], TURBINE_HEIGHT_M, zone)) * stationCount
+        : 0;
+      const balance = solarProd + windProd - dailyConsumption;
+      deficit = Math.max(0, deficit - balance); // deficit accumulates, surplus reduces it
+      if (deficit > worstDeficit) worstDeficit = deficit;
+    }
+  }
+
+  return worstDeficit;
+}
+
+// Confidence score
+interface ConfidenceScore {
+  score: number;
+  dataQuality: number;
+  seasonalCoverage: number;
+  designMargin: number;
+  windReliability: number;
+  label: 'HIGH' | 'MEDIUM' | 'LOW';
+  notes: string[];
+}
+
+function calculateConfidence(
+  hasDailySeries: boolean,
+  windSourceCount: number,
+  windDependency: number,    // 0-1, fraction of yearly production from wind
+  worstMonthCoverage: number, // % of consumption covered in worst month
+  lat: number,
+  zone: string
+): ConfidenceScore {
+  const notes: string[] = [];
+
+  // Data quality (0-0.3)
+  let dataQuality = hasDailySeries ? 0.25 : 0.10;
+  if (windSourceCount >= 3) dataQuality += 0.05;
+  else if (windSourceCount <= 1) { dataQuality -= 0.05; notes.push('Limited wind data sources'); }
+
+  // Seasonal coverage (0-0.3)
+  let seasonalCoverage = Math.min(0.3, worstMonthCoverage / 100 * 0.3);
+  if (worstMonthCoverage < 30) notes.push('Worst month covers <30% of demand');
+
+  // Design margin (0-0.2)
+  let designMargin = 0.15; // default OK
+  if (Math.abs(lat) > 65) { designMargin -= 0.05; notes.push('Extreme latitude — reduced design margin'); }
+  if (zone === 'arctic') { designMargin -= 0.05; notes.push('Arctic zone — additional uncertainty'); }
+
+  // Wind reliability (0-0.2)
+  let windReliability = 0.2;
+  if (windDependency > 0.5) { windReliability -= 0.10; notes.push('>50% wind dependent — site verification critical'); }
+  if (windDependency > 0.3) { windReliability -= 0.05; notes.push('Wind contributes >30% — subject to site verification'); }
+
+  const score = Math.max(0, Math.min(1, dataQuality + seasonalCoverage + designMargin + windReliability));
+  const label = score >= 0.7 ? 'HIGH' : score >= 0.45 ? 'MEDIUM' : 'LOW';
+
+  return { score: Math.round(score * 100) / 100, dataQuality, seasonalCoverage, designMargin, windReliability, label, notes };
+}
+
+// Parse DMS coordinates: 53°08'10.9"N 23°53'58.7"E or 53.1363, 23.8996
+function parseCoordinates(input: string): { lat: number; lon: number } | null {
+  // Try decimal format first: "52.52, 13.405" or "52.52 13.405"
+  const decimalMatch = input.match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
+  if (decimalMatch) {
+    const lat = parseFloat(decimalMatch[1]);
+    const lon = parseFloat(decimalMatch[2]);
+    if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+
+  // Try DMS format: 53°08'10.9"N 23°53'58.7"E (E/W is optional, defaults to E)
+  const dmsRegex = /(\d+)[°]\s*(\d+)['']\s*(\d+\.?\d*)[""]\s*([NSns])\s+(\d+)[°]\s*(\d+)['']\s*(\d+\.?\d*)[""]\s*([EWew])?/;
+  const dmsMatch = input.match(dmsRegex);
+  if (dmsMatch) {
+    const latDeg = parseInt(dmsMatch[1]);
+    const latMin = parseInt(dmsMatch[2]);
+    const latSec = parseFloat(dmsMatch[3]);
+    const latDir = dmsMatch[4].toUpperCase();
+
+    const lonDeg = parseInt(dmsMatch[5]);
+    const lonMin = parseInt(dmsMatch[6]);
+    const lonSec = parseFloat(dmsMatch[7]);
+    const lonDir = (dmsMatch[8] || 'E').toUpperCase(); // Default to E if not specified
+
+    let lat = latDeg + latMin / 60 + latSec / 3600;
+    let lon = lonDeg + lonMin / 60 + lonSec / 3600;
+
+    if (latDir === 'S') lat = -lat;
+    if (lonDir === 'W') lon = -lon;
+
+    return { lat, lon };
+  }
+
+  return null;
+}
+
+// Geocoding using Nominatim (OpenStreetMap)
+async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; display: string; country: string } | null> {
+  // First try to parse as coordinates — then reverse geocode for address/country
+  const coords = parseCoordinates(address);
+  if (coords) {
+    try {
+      const revUrl = `https://nominatim.openstreetmap.org/reverse?lat=${coords.lat}&lon=${coords.lon}&format=json&accept-language=en&zoom=10`;
+      const revResp = await fetch(revUrl, {
+        headers: { 'User-Agent': 'iONE-Configurator/2.0 (contact@gtlab.org)' }
+      });
+      if (revResp.ok) {
+        const revData = await revResp.json();
+        const country = revData.address?.country || 'Unknown';
+        const parts = [
+          revData.address?.city || revData.address?.town || revData.address?.village || revData.address?.county,
+          revData.address?.state,
+          country
+        ].filter(Boolean);
+        return {
+          lat: coords.lat,
+          lon: coords.lon,
+          display: parts.length > 0 ? parts.join(', ') : revData.display_name || `${coords.lat.toFixed(4)}°, ${coords.lon.toFixed(4)}°`,
+          country
+        };
+      }
+    } catch (e) {
+      console.error('Reverse geocode error:', e);
+    }
+    return {
+      lat: coords.lat,
+      lon: coords.lon,
+      display: `${coords.lat.toFixed(4)}°, ${coords.lon.toFixed(4)}°`,
+      country: 'Unknown'
+    };
+  }
+
+  // Otherwise use Nominatim geocoding with addressdetails
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'iONE-Configurator/1.0' }
+    });
+    const data = await response.json();
+    if (data.length > 0) {
+      // Extract country from address details
+      const addressDetails = data[0].address || {};
+      const country = addressDetails.country || 'Unknown';
+      return {
+        lat: parseFloat(data[0].lat),
+        lon: parseFloat(data[0].lon),
+        display: data[0].display_name,
+        country
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Get monthly irradiance data using DRcalc with 2-axis tracking
+// This is the accurate endpoint: glob_2axis=1 gives optimal 2-axis tracking irradiance
+async function getPVGISData(
+  lat: number,
+  lon: number,
+  peakPower: number = 4.32,
+  loss: number = 14
+): Promise<{
+  monthly: MonthlyAggregate[];
+  yearly: { E_y: number; E_d: number; H_y: number };
+  location: { lat: number; lon: number; elevation: number };
+  database: string;
+} | null> {
+  try {
+    // DRcalc with glob_2axis=1 for 2-axis tracking, month=0 for all months
+    const url = `${PVGIS_BASE}/DRcalc?lat=${lat}&lon=${lon}&glob_2axis=1&month=0&outputformat=json`;
+
+    console.log('PVGIS DRcalc URL:', url);
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('PVGIS error:', response.status, text);
+      return null;
+    }
+
+    const data = await response.json();
+
+    if (!data.outputs?.daily_profile) {
+      console.error('No daily_profile in PVGIS response');
+      return null;
+    }
+
+    // DRcalc returns 288 entries: 12 months × 24 hours
+    // Each entry: { month, time, "G(n)" (global irradiance on tracking surface) }
+    const dailyProfile = data.outputs.daily_profile;
+
+    // System efficiency: 1 - loss%
+    const efficiency = 1 - loss / 100;
+
+    // Aggregate to monthly totals
+    const monthlyIrradiance = new Map<number, number>();
+    for (let m = 1; m <= 12; m++) {
+      monthlyIrradiance.set(m, 0);
+    }
+
+    for (const item of dailyProfile) {
+      const m = item.month;
+      const irr = item['G(n)'] || 0;  // W/m² for this hour
+      monthlyIrradiance.set(m, (monthlyIrradiance.get(m) || 0) + irr);
+    }
+
+    // Convert irradiance to energy generation
+    // Formula: E = H × P × η
+    // H = daily irradiance (kWh/m²/day) = sum of hourly W/m² / 1000
+    // P = peak power (kW)
+    // η = system efficiency
+    const monthly: MonthlyAggregate[] = [];
+    let yearlyEnergy = 0;
+    let yearlyIrradiance = 0;
+
+    const daysPerMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    for (let m = 1; m <= 12; m++) {
+      const dailyIrr = (monthlyIrradiance.get(m) || 0) / 1000;  // kWh/m²/day
+      const dailyEnergy = dailyIrr * peakPower * efficiency;    // kWh/day
+      const monthlyEnergy = dailyEnergy * daysPerMonth[m - 1];  // kWh/month
+
+      monthly.push({
+        month: m,
+        E_d: dailyEnergy,
+        E_m: monthlyEnergy,
+        H_d: dailyIrr,
+        H_m: dailyIrr * daysPerMonth[m - 1],
+        avgTemp: 15,  // Placeholder - DRcalc doesn't include temp
+        avgWind: 0,   // No wind data from DRcalc
+        windProduction: 0
+      });
+
+      yearlyEnergy += monthlyEnergy;
+      yearlyIrradiance += dailyIrr * daysPerMonth[m - 1];
+    }
+
+    return {
+      monthly,
+      yearly: {
+        E_y: yearlyEnergy,
+        E_d: yearlyEnergy / 365,
+        H_y: yearlyIrradiance
+      },
+      location: {
+        lat: data.inputs.location.latitude,
+        lon: data.inputs.location.longitude,
+        elevation: data.inputs.location.elevation || 0
+      },
+      database: 'PVGIS-SARAH2 (DRcalc 2-axis)'
+    };
+
+  } catch (error) {
+    console.error('PVGIS fetch error:', error);
+    return null;
+  }
+}
+
+// Wind data result interface
+interface WindDataResult {
+  monthlyAvg: number[];      // Monthly average wind speeds at turbine height
+  yearlyAvg: number;         // Yearly average wind speed at turbine height
+  maxHourlyWind: number;     // Maximum hourly wind speed at turbine height
+  estimatedMaxGust: number;  // Estimated max gust (with factor)
+  gustFactor: number;        // Gust factor used
+  turbineHeight: number;     // VAWT installation height (m)
+  dataSource: string;        // Data source used
+}
+
+// VAWT turbine height: 7m (between 6-10m as specified)
+const TURBINE_HEIGHT_M = 7;
+
+// Wind shear adjustment: V_h = V_10 × (h/10)^α
+// α = 0.14 for open terrain (arctic, desert), 0.20 for continental
+function adjustWindForHeight(windAt10m: number, targetHeight: number, zone: string): number {
+  const alpha = (zone === 'arctic' || zone === 'desert') ? 0.14 : 0.20;
+  return windAt10m * Math.pow(targetHeight / 10, alpha);
+}
+
+// Get wind data from NASA POWER API (fallback when PVGIS unavailable)
+async function getNASAWindData(lat: number, lon: number, zone: string): Promise<WindDataResult | null> {
+  try {
+    const year = new Date().getFullYear() - 1;  // Use last full year
+    const url = `https://power.larc.nasa.gov/api/temporal/daily/point?parameters=WS10M,WS10M_MAX&community=RE&longitude=${lon}&latitude=${lat}&start=${year}0101&end=${year}1231&format=JSON`;
+    console.log('NASA POWER URL:', url);
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!response.ok) {
+      console.error('NASA POWER error:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const ws10m = data.properties?.parameter?.WS10M;
+    const ws10mMax = data.properties?.parameter?.WS10M_MAX;
+
+    if (!ws10m || !ws10mMax) {
+      console.error('No wind data in NASA POWER response');
+      return null;
+    }
+
+    // Group by month
+    const monthlyWind: number[][] = Array.from({ length: 12 }, () => []);
+    let maxDailyWind = 0;
+
+    for (const [dateStr, windSpeed] of Object.entries(ws10m)) {
+      const month = parseInt(dateStr.substring(4, 6)) - 1;
+      monthlyWind[month].push(windSpeed as number);
+    }
+
+    for (const windSpeed of Object.values(ws10mMax)) {
+      if ((windSpeed as number) > maxDailyWind) {
+        maxDailyWind = windSpeed as number;
+      }
+    }
+
+    // Calculate monthly averages and adjust for turbine height
+    const monthlyAvg = monthlyWind.map(speeds =>
+      speeds.length > 0
+        ? adjustWindForHeight(speeds.reduce((a, b) => a + b, 0) / speeds.length, TURBINE_HEIGHT_M, zone)
+        : 0
+    );
+
+    const yearlyAvg = monthlyAvg.reduce((a, b) => a + b, 0) / 12;
+    const maxHourlyWind = adjustWindForHeight(maxDailyWind, TURBINE_HEIGHT_M, zone);
+
+    // Gust factor
+    const gustFactor = (zone === 'desert' || zone === 'arctic') ? 1.5 : 1.3;
+    const estimatedMaxGust = maxHourlyWind * gustFactor;
+
+    return {
+      monthlyAvg,
+      yearlyAvg,
+      maxHourlyWind,
+      estimatedMaxGust,
+      gustFactor,
+      turbineHeight: TURBINE_HEIGHT_M,
+      dataSource: 'NASA'
+    };
+
+  } catch (error) {
+    console.error('NASA POWER fetch error:', error);
+    return null;
+  }
+}
+
+// Open-Meteo Archive: get average wind speed (ERA5 reanalysis, better spatial resolution)
+async function getOpenMeteoWindData(lat: number, lon: number, zone: string): Promise<WindDataResult | null> {
+  try {
+    const endYear = new Date().getFullYear() - 1;
+    const startYear = endYear - 2; // 3 years average
+    const startDate = `${startYear}-01-01`;
+    const endDate = `${endYear}-12-31`;
+
+    const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${startDate}&end_date=${endDate}&daily=wind_speed_10m_max,wind_speed_10m_mean&wind_speed_unit=ms&timezone=auto`;
+    console.log('Open-Meteo wind avg URL:', url);
+
+    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const dailyMean = data.daily?.wind_speed_10m_mean as number[] | undefined;
+    const dailyMax = data.daily?.wind_speed_10m_max as number[] | undefined;
+    const dates = data.daily?.time as string[] | undefined;
+
+    if (!dailyMean || !dates || dailyMean.length === 0) return null;
+
+    // Aggregate by month
+    const monthlyWind: number[][] = Array.from({ length: 12 }, () => []);
+    let maxWind = 0;
+
+    for (let i = 0; i < dates.length; i++) {
+      const month = parseInt(dates[i].substring(5, 7)) - 1;
+      const ws = dailyMean[i];
+      if (ws !== null && ws !== undefined) {
+        monthlyWind[month].push(ws);
+      }
+      if (dailyMax && dailyMax[i] > maxWind) maxWind = dailyMax[i];
+    }
+
+    const monthlyAvg = monthlyWind.map(speeds =>
+      speeds.length > 0
+        ? adjustWindForHeight(speeds.reduce((a, b) => a + b, 0) / speeds.length, TURBINE_HEIGHT_M, zone)
+        : 0
+    );
+
+    const yearlyAvg = monthlyAvg.reduce((a, b) => a + b, 0) / 12;
+    const maxWindAtHeight = adjustWindForHeight(maxWind, TURBINE_HEIGHT_M, zone);
+    const gustFactor = (zone === 'desert' || zone === 'arctic') ? 1.5 : 1.3;
+
+    console.log(`Open-Meteo wind: yearly avg = ${yearlyAvg.toFixed(1)} m/s at ${TURBINE_HEIGHT_M}m`);
+
+    return {
+      monthlyAvg,
+      yearlyAvg,
+      maxHourlyWind: maxWindAtHeight,
+      estimatedMaxGust: maxWindAtHeight * gustFactor,
+      gustFactor,
+      turbineHeight: TURBINE_HEIGHT_M,
+      dataSource: 'Open-Meteo ERA5'
+    };
+  } catch (error) {
+    console.error('Open-Meteo wind fetch error:', error);
+    return null;
+  }
+}
+
+// Open-Meteo Archive: get max gust over 5 years for frame selection
+// Returns max gust in km/h
+async function getMaxGust5yr(lat: number, lon: number): Promise<{ maxGustKmh: number; dataYears: number } | null> {
+  try {
+    const endYear = new Date().getFullYear() - 1;  // Last complete year
+    const startYear = endYear - 4;  // 5 years of data
+    const startDate = `${startYear}-01-01`;
+    const endDate = `${endYear}-12-31`;
+
+    const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${startDate}&end_date=${endDate}&daily=wind_gusts_10m_max&timezone=auto`;
+    console.log('Open-Meteo Archive URL:', url);
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!response.ok) {
+      console.error('Open-Meteo Archive error:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const gusts = data.daily?.wind_gusts_10m_max as number[] | undefined;
+
+    if (!gusts || gusts.length === 0) {
+      console.error('No gust data in Open-Meteo response');
+      return null;
+    }
+
+    // Filter out null values and find max
+    const validGusts = gusts.filter((g): g is number => g !== null && g !== undefined);
+    const maxGustKmh = Math.max(...validGusts);
+    const dataYears = endYear - startYear + 1;
+
+    console.log(`Open-Meteo: Max gust over ${dataYears} years = ${maxGustKmh.toFixed(1)} km/h (${validGusts.length} data points)`);
+
+    return { maxGustKmh, dataYears };
+  } catch (error) {
+    console.error('Open-Meteo Archive fetch error:', error);
+    return null;
+  }
+}
+
+// === Station Wind Data (derated model proxy) ===
+// ERA5/MERRA-2 overestimate wind by 40-90% vs real weather stations in continental locations.
+// Until real NOAA ISD station matching is implemented, we derate model data as a proxy.
+const WIND_MODEL_DERATING = 1.00; // No derating — using median of 3 sources (ERA5, MERRA-2, PVGIS) as-is
+
+interface StationWindResult {
+  monthlyAvg: number[];    // 12 months, m/s at 10m (derated)
+  yearlyAvg: number;       // yearly average (derated)
+  stationId: string;
+  stationName: string;
+  distanceKm: number;
+  dataSource: 'ERA5-derated';
+  yearsOfData: number;
+}
+
+async function getStationWindData(lat: number, lon: number): Promise<StationWindResult | null> {
+  try {
+    const endYear = new Date().getFullYear() - 1;
+    const startYear = endYear - 4; // 5 years of data
+    const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${startYear}-01-01&end_date=${endYear}-12-31&daily=wind_speed_10m_mean&wind_speed_unit=ms&timezone=auto&cell_selection=nearest`;
+    console.log('Station wind URL:', url);
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const dates = data.daily?.time as string[] | undefined;
+    const winds = data.daily?.wind_speed_10m_mean as (number | null)[] | undefined;
+    if (!dates || !winds) return null;
+
+    // Aggregate by month
+    const monthlyWind: number[][] = Array.from({ length: 12 }, () => []);
+    for (let i = 0; i < dates.length; i++) {
+      const m = parseInt(dates[i].substring(5, 7)) - 1;
+      if (winds[i] !== null && winds[i] !== undefined) {
+        monthlyWind[m].push(winds[i]!);
+      }
+    }
+
+    const monthlyAvg = monthlyWind.map(speeds =>
+      speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0
+    );
+    const yearlyAvg = monthlyAvg.reduce((a, b) => a + b, 0) / 12;
+
+    // Apply derating — model data overestimates real station measurements
+    const correctedMonthly = monthlyAvg.map(v => +(v * WIND_MODEL_DERATING).toFixed(2));
+    const correctedYearly = +(yearlyAvg * WIND_MODEL_DERATING).toFixed(2);
+
+    console.log(`Station wind: raw avg=${yearlyAvg.toFixed(1)} corrected=${correctedYearly.toFixed(1)} m/s (×${WIND_MODEL_DERATING} derating)`);
+
+    return {
+      monthlyAvg: correctedMonthly,
+      yearlyAvg: correctedYearly,
+      stationId: 'ERA5-derated',
+      stationName: `Nearest grid point to ${lat.toFixed(2)},${lon.toFixed(2)}`,
+      distanceKm: 0,
+      dataSource: 'ERA5-derated',
+      yearsOfData: endYear - startYear + 1,
+    };
+  } catch (error) {
+    console.error('Station wind fetch error:', error);
+    return null;
+  }
+}
+
+// Get wind data — query all sources in parallel, take best (highest avg wind)
+async function getWindData(lat: number, lon: number, zone: string): Promise<WindDataResult | null> {
+  // Fetch from all sources in parallel
+  const [pvgisResult, nasaResult, openMeteoResult] = await Promise.all([
+    getPVGISWindData(lat, lon, zone),
+    getNASAWindData(lat, lon, zone),
+    getOpenMeteoWindData(lat, lon, zone)
+  ]);
+
+  // Collect all successful results
+  const results = [pvgisResult, nasaResult, openMeteoResult].filter((r): r is WindDataResult => r !== null);
+
+  if (results.length === 0) return null;
+
+  // Median per month — balanced approach between optimistic and pessimistic
+  // Grid-based sources (PVGIS, NASA) often underestimate wind in complex terrain
+  // ERA5 has better spatial resolution but can overestimate in flat terrain
+  // Median is most robust with heterogeneous sources
+  const monthlyAvg = Array.from({ length: 12 }, (_, i) => {
+    const values = results.map(r => r.monthlyAvg[i]).filter(v => v > 0).sort((a, b) => a - b);
+    if (values.length === 0) return 0;
+    if (values.length === 1) return values[0];
+    if (values.length === 2) return (values[0] + values[1]) / 2;
+    // 3+ sources: median
+    return values[Math.floor(values.length / 2)];
+  });
+  const yearlyAvg = monthlyAvg.reduce((a, b) => a + b, 0) / 12;
+
+  // Max wind/gust: take highest (conservative for structural sizing)
+  const maxHourlyWind = Math.max(...results.map(r => r.maxHourlyWind));
+  const estimatedMaxGust = Math.max(...results.map(r => r.estimatedMaxGust));
+
+  const sources = results.map(r => `${r.dataSource}:${r.yearlyAvg.toFixed(1)}`).join(', ');
+  console.log(`Wind sources: ${sources} → P75 conservative yearly: ${yearlyAvg.toFixed(1)} m/s`);
+
+  return {
+    monthlyAvg,
+    yearlyAvg,
+    maxHourlyWind,
+    estimatedMaxGust,
+    gustFactor: results[0].gustFactor,
+    turbineHeight: TURBINE_HEIGHT_M,
+    dataSource: `P75(${results.map(r => r.dataSource).join(', ')})`
+  };
+}
+
+// Get wind from PVGIS TMY
+async function getPVGISWindData(lat: number, lon: number, zone: string): Promise<WindDataResult | null> {
+  try {
+    const url = `${PVGIS_BASE}/tmy?lat=${lat}&lon=${lon}&outputformat=json`;
+    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (!data.outputs?.tmy_hourly) return null;
+
+    const monthlyWind: number[][] = Array.from({ length: 12 }, () => []);
+    let maxHourlyWind = 0;
+
+    for (const hour of data.outputs.tmy_hourly) {
+      const month = parseInt(hour['time(UTC)'].substring(4, 6)) - 1;
+      const windSpeed = hour.WS10m || 0;
+      monthlyWind[month].push(windSpeed);
+      if (windSpeed > maxHourlyWind) maxHourlyWind = windSpeed;
+    }
+
+    const monthlyAvg = monthlyWind.map(speeds =>
+      speeds.length > 0
+        ? adjustWindForHeight(speeds.reduce((a, b) => a + b, 0) / speeds.length, TURBINE_HEIGHT_M, zone)
+        : 0
+    );
+
+    const yearlyAvg = monthlyAvg.reduce((a, b) => a + b, 0) / 12;
+    const maxWindAtHeight = adjustWindForHeight(maxHourlyWind, TURBINE_HEIGHT_M, zone);
+    const gustFactor = (zone === 'desert' || zone === 'arctic') ? 1.5 : 1.3;
+
+    return {
+      monthlyAvg,
+      yearlyAvg,
+      maxHourlyWind: maxWindAtHeight,
+      estimatedMaxGust: maxWindAtHeight * gustFactor,
+      gustFactor,
+      turbineHeight: TURBINE_HEIGHT_M,
+      dataSource: 'PVGIS'
+    };
+  } catch {
+    return null;
+  }
+}
+
+// === Civil hourly profile with heat pump ===
+interface HourlyProfile {
+  hour: number;       // 0-23
+  consumption_w: number;
+  solar_w: number;
+  battery_delta_wh: number;  // positive = charging, negative = discharging
+  soc_wh: number;
+  grid_wh: number;    // taken from grid (only if grid mode)
+  curtailed_wh: number; // excess solar when battery full
+}
+
+interface DailyProfileResult {
+  month: number;
+  monthName: string;
+  hourly: HourlyProfile[];
+  selfSufficiency: number;  // 0-100%
+  solarGenerated_kWh: number;
+  consumed_kWh: number;
+  fromBattery_kWh: number;
+  fromGrid_kWh: number;
+  curtailed_kWh: number;
+  minSOC_kWh: number;
+  maxSOC_kWh: number;
+}
+
+// Standard residential load profile (fraction of daily consumption per hour)
+// Based on German SLP H0 profile, adapted
+function getResidentialProfile(heatPump: boolean, month: number): number[] {
+  // Base residential profile (fraction of daily kWh per hour, sums to 1.0)
+  // Higher evening load, lower daytime
+  const baseProfile = [
+    0.020, 0.018, 0.016, 0.016, 0.018, 0.025,  // 0-5: night
+    0.045, 0.065, 0.060,                          // 6-8: morning
+    0.035, 0.030, 0.028, 0.032, 0.030, 0.028, 0.030, // 9-15: day
+    0.040, 0.055, 0.070, 0.075, 0.070, 0.065,   // 16-21: evening
+    0.045, 0.030                                   // 22-23: late evening
+  ];
+
+  if (!heatPump) return baseProfile;
+
+  // Heat pump overlay: runs ~10 min/hour in winter, less in shoulder, minimal in summer
+  // Typical heat pump: 2-3 kW, 10 min/hour = ~400-500W average
+  // This adds to the base load, distributed across all hours (heating needed 24h in winter)
+  const winterMonths = [0, 1, 2, 10, 11]; // Jan, Feb, Mar, Nov, Dec
+  const shoulderMonths = [3, 4, 9];        // Apr, May, Oct
+  // Summer: Jun-Sep (months 5-8) — heat pump off or minimal (hot water only)
+
+  let hpFraction = 0;  // fraction of daily consumption that heat pump adds
+  if (winterMonths.includes(month)) {
+    hpFraction = 0.35;  // heat pump is ~35% of total winter consumption
+  } else if (shoulderMonths.includes(month)) {
+    hpFraction = 0.15;
+  } else {
+    hpFraction = 0.05;  // hot water only
+  }
+
+  // Heat pump runs fairly evenly across hours (thermostat controlled)
+  // Slightly more during cold night hours
+  const hpHourlyWeight = [
+    1.2, 1.2, 1.2, 1.2, 1.1, 1.0,  // 0-5: cold night, pump runs more
+    0.9, 0.8, 0.7,                     // 6-8: warming up
+    0.6, 0.6, 0.5, 0.5, 0.5, 0.6, 0.7, // 9-15: milder daytime
+    0.8, 0.9, 1.0, 1.0, 1.1, 1.1,   // 16-21: cooling down
+    1.2, 1.2                            // 22-23: night
+  ];
+  const hpWeightSum = hpHourlyWeight.reduce((a, b) => a + b, 0);
+
+  // Combine: base load + heat pump
+  const combined = baseProfile.map((base, h) => {
+    return base * (1 - hpFraction) + hpFraction * (hpHourlyWeight[h] / hpWeightSum);
+  });
+
+  // Normalize to sum = 1.0
+  const sum = combined.reduce((a, b) => a + b, 0);
+  return combined.map(v => v / sum);
+}
+
+// Solar generation curve for a given day (bell curve based on daylight hours)
+function getSolarHourlyCurve(lat: number, month: number): number[] {
+  // Approximate sunrise/sunset by latitude and month
+  // Simplified: day length varies with latitude and season
+  const declination = 23.45 * Math.sin((2 * Math.PI / 365) * (284 + (month * 30.44)));
+  const latRad = lat * Math.PI / 180;
+  const decRad = declination * Math.PI / 180;
+  const cosHourAngle = -Math.tan(latRad) * Math.tan(decRad);
+  const hourAngle = Math.acos(Math.max(-1, Math.min(1, cosHourAngle))) * 180 / Math.PI;
+  const dayLengthHours = 2 * hourAngle / 15;
+
+  const solarNoon = 12;
+  const sunrise = solarNoon - dayLengthHours / 2;
+  const sunset = solarNoon + dayLengthHours / 2;
+
+  // Generate bell curve for solar generation
+  const curve = new Array(24).fill(0);
+  for (let h = 0; h < 24; h++) {
+    if (h >= sunrise && h <= sunset) {
+      // Sinusoidal curve peaking at solar noon
+      const t = (h - sunrise) / (sunset - sunrise) * Math.PI;
+      curve[h] = Math.sin(t);
+    }
+  }
+
+  // Normalize to sum = 1.0
+  const sum = curve.reduce((a, b) => a + b, 0);
+  if (sum > 0) {
+    for (let h = 0; h < 24; h++) curve[h] /= sum;
+  }
+  return curve;
+}
+
+// Calculate full-year hourly simulation (365 days × 24 hours)
+// SOC carries over between days — shows real battery behavior
+function calculateDailyProfiles(
+  dailyConsumption_kWh: number,
+  monthlyData: MonthlyAggregate[],
+  lat: number,
+  batteryCapacity_kWh: number,
+  stations: number,
+  heatPump: boolean,
+  grid: boolean,
+  panelScale: number
+): DailyProfileResult[] {
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const batMax = batteryCapacity_kWh * 1000;
+
+  // Pre-compute profiles and solar curves for each month
+  const monthProfiles = monthlyData.map((m, i) => ({
+    consumptionProfile: getResidentialProfile(heatPump, i),
+    solarCurve: getSolarHourlyCurve(lat, i + 1),
+    dailySolar_kWh: m.E_d * panelScale * stations,
+  }));
+
+  // Run 2 years to stabilize SOC (year 1 = warmup, year 2 = results)
+  let soc_wh = batMax * 0.5;
+
+  // Warmup year
+  for (let month = 0; month < 12; month++) {
+    const mp = monthProfiles[month];
+    for (let day = 0; day < DAYS_PER_MONTH[month]; day++) {
+      for (let h = 0; h < 24; h++) {
+        const consumption_w = dailyConsumption_kWh * 1000 * mp.consumptionProfile[h];
+        const solar_w = mp.dailySolar_kWh * 1000 * mp.solarCurve[h];
+        const net = solar_w - consumption_w;
+        if (net >= 0) {
+          soc_wh = Math.min(batMax, soc_wh + net);
+        } else {
+          const discharge = Math.min(-net, soc_wh);
+          soc_wh -= discharge;
+        }
+      }
+    }
+  }
+
+  // Results year — track per-month stats
+  const results: DailyProfileResult[] = [];
+
+  for (let month = 0; month < 12; month++) {
+    const mp = monthProfiles[month];
+    const days = DAYS_PER_MONTH[month];
+
+    let monthFromGrid = 0;
+    let monthFromBattery = 0;
+    let monthCurtailed = 0;
+    let monthMinSOC = soc_wh;
+    let monthMaxSOC = soc_wh;
+    let monthUnmet = 0;
+
+    // Representative day hourly (last day of month for display)
+    let lastDayHourly: HourlyProfile[] = [];
+
+    for (let day = 0; day < days; day++) {
+      const dayHourly: HourlyProfile[] = [];
+
+      for (let h = 0; h < 24; h++) {
+        const consumption_w = dailyConsumption_kWh * 1000 * mp.consumptionProfile[h];
+        const solar_w = mp.dailySolar_kWh * 1000 * mp.solarCurve[h];
+        const net = solar_w - consumption_w;
+
+        let battery_delta = 0;
+        let grid_wh = 0;
+        let curtailed = 0;
+
+        if (net >= 0) {
+          const canCharge = batMax - soc_wh;
+          battery_delta = Math.min(net, canCharge);
+          curtailed = net - battery_delta;
+          soc_wh += battery_delta;
+        } else {
+          const needed = -net;
+          const canDischarge = soc_wh;
+          const discharged = Math.min(needed, canDischarge);
+          battery_delta = -discharged;
+          soc_wh -= discharged;
+          const shortfall = needed - discharged;
+          if (shortfall > 0) {
+            if (grid) {
+              grid_wh = shortfall;
+            } else {
+              monthUnmet += shortfall;
+            }
+          }
+          monthFromBattery += discharged;
+        }
+
+        if (soc_wh < monthMinSOC) monthMinSOC = soc_wh;
+        if (soc_wh > monthMaxSOC) monthMaxSOC = soc_wh;
+        monthFromGrid += grid_wh;
+        monthCurtailed += curtailed;
+
+        dayHourly.push({
+          hour: h,
+          consumption_w: Math.round(consumption_w),
+          solar_w: Math.round(solar_w),
+          battery_delta_wh: Math.round(battery_delta),
+          soc_wh: Math.round(soc_wh),
+          grid_wh: Math.round(grid_wh),
+          curtailed_wh: Math.round(curtailed),
+        });
+      }
+
+      lastDayHourly = dayHourly;
+    }
+
+    const totalConsumed = dailyConsumption_kWh * days * 1000;
+    const totalFromGrid = monthFromGrid;
+    const selfSupplied = totalConsumed - totalFromGrid - monthUnmet;
+    const selfSufficiency = totalConsumed > 0 ? Math.max(0, (selfSupplied / totalConsumed) * 100) : 100;
+
+    results.push({
+      month: month + 1,
+      monthName: MONTH_NAMES[month],
+      hourly: lastDayHourly,
+      selfSufficiency: Math.round(selfSufficiency),
+      solarGenerated_kWh: mp.dailySolar_kWh * days,
+      consumed_kWh: dailyConsumption_kWh * days,
+      fromBattery_kWh: monthFromBattery / 1000,
+      fromGrid_kWh: totalFromGrid / 1000,
+      curtailed_kWh: monthCurtailed / 1000,
+      minSOC_kWh: monthMinSOC / 1000,
+      maxSOC_kWh: monthMaxSOC / 1000,
+    });
+  }
+
+  return results;
+}
+
+// === V2: Calculate system requirements — seasonal adequacy first ===
+function calculateSystemRequirements(
+  dailyConsumption: number,
+  monthlyData: MonthlyAggregate[],
+  zone: string,
+  avgWind: number = 0,
+  loadClass?: LoadClass,
+  dailySeries?: DailySeries,
+  lat: number = 0,
+  maxGust: number = 0,
+  mode: string = 'industrial',
+  grid: boolean = false,
+  hideMode: boolean = false
+) {
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  // === MODE CONSTANTS ===
+  const isCivil = mode === 'civil';
+  const BATTERY_MODULE_KWH = 16.08;
+  const H2_EFFICIENCY = 0.35;
+
+  // Civil: fixed battery cap (2 modules = 32 kWh), max 1 station with grid, max 2 without, no H2
+  // Industrial: up to 6 stations, 3 modules per station, H2 allowed
+  const CIVIL_MAX_BATTERY_MODULES = 2;
+  const CIVIL_MAX_STATIONS_GRID = 1;
+  const CIVIL_MAX_STATIONS_OFFGRID = 2;
+
+  const INDUSTRIAL_MAX_BATTERY_MODULES_PER_STATION = 3;
+  const INDUSTRIAL_MAX_STATIONS = 6;
+
+  const MAX_STATIONS = isCivil
+    ? (grid ? CIVIL_MAX_STATIONS_GRID : CIVIL_MAX_STATIONS_OFFGRID)
+    : INDUSTRIAL_MAX_STATIONS;
+
+  const MAX_BATTERY_MODULES = isCivil
+    ? CIVIL_MAX_BATTERY_MODULES
+    : INDUSTRIAL_MAX_BATTERY_MODULES_PER_STATION;  // per station for industrial
+
+  // For industrial, total modules scale with stations. For civil, fixed.
+  const getMaxBatteryModules = (stCount: number) =>
+    isCivil ? CIVIL_MAX_BATTERY_MODULES : MAX_BATTERY_MODULES * stCount;
+
+  const getMaxBatteryKwh = (stCount: number) =>
+    getMaxBatteryModules(stCount) * BATTERY_MODULE_KWH;
+
+  // === STEP 1: Wind turbine decision + polar detection ===
+  // Wind threshold: median of ERA5, MERRA-2, PVGIS — no derating, 4.0 m/s minimum
+  const useWindTurbine = avgWind >= 4.0;
+  const isPolar = Math.abs(lat) >= 63;
+  const isPolarNoWind = isPolar && !useWindTurbine;
+  const usesPVF180 = hideMode || zone === 'desert' || maxGust > 180;
+  const panelsPerStation = isCivil ? 6 : (isPolarNoWind ? 8 : (usesPVF180 ? 4 : 6));
+  const panelScaleFromDefault = panelsPerStation / 6;
+
+  // Monthly totals per station (solar scaled by panel count + wind)
+  const monthlyTotals = monthlyData.map(m => {
+    const solar = m.E_d * panelScaleFromDefault;
+    const windProd = useWindTurbine ? (m.windProduction || 0) : 0;
+    return {
+      month: m.month,
+      solar,
+      wind: windProd,
+      total: solar + windProd,
+      avgWind: m.avgWind || 0
+    };
+  });
+
+  const worstMonth = monthlyTotals.reduce((min, m) => m.total < min.total ? m : min, monthlyTotals[0]);
+  const bestMonth = monthlyTotals.reduce((max, m) => m.total > max.total ? m : max, monthlyTotals[0]);
+  const singleStationYearlyProduction = monthlyTotals.reduce((sum, m, i) => sum + m.total * DAYS_PER_MONTH[i], 0);
+  const yearlyConsumption = dailyConsumption * 365;
+
+  const batDerating = getUsableBatteryCapacity(BATTERY_MODULE_KWH, zone);
+  const USABLE_KWH_PER_MODULE = batDerating.usableKwh;
+  const autonomyDays = loadClass?.autonomyDaysTarget || 3;
+
+  // === STEP 2: Find minimum stations ===
+  let stations = 1;
+  let batteryModules = 1;
+  let useH2 = false;
+  let h2Hubs = 0;
+  let summerSurplus = 0;
+  let winterDeficit = 0;
+  const warnings: string[] = [];
+
+  function monthlyWorstRun(stCount: number): number {
+    let worst = 0;
+    for (let start = 0; start < 12; start++) {
+      let run = 0;
+      for (let j = 0; j < 12; j++) {
+        const idx = (start + j) % 12;
+        const bal = (monthlyTotals[idx].total * stCount - dailyConsumption) * DAYS_PER_MONTH[idx];
+        if (bal < 0) run += -bal;
+        else run = Math.max(0, run - bal);
+      }
+      if (run > worst) worst = run;
+    }
+    return worst;
+  }
+
+  function dailyWorstRun(stCount: number): number {
+    if (!dailySeries?.available) return -1;
+    return findWorstDailyDeficitRun(
+      dailySeries.dailyProduction,
+      dailySeries.dailyWind10m,
+      dailyConsumption,
+      stCount,
+      useWindTurbine,
+      zone
+    );
+  }
+
+  if (isCivil) {
+    // === CIVIL SIZING ===
+    // Try 1 station, then 2 (offgrid only). Battery capped at 2 modules.
+    // If deficit remains — warn, don't add more hardware.
+    for (stations = 1; stations <= MAX_STATIONS; stations++) {
+      const monthRun = monthlyWorstRun(stations);
+      const dayRun = dailySeries?.available ? dailyWorstRun(stations) : monthRun;
+      const worstRunBoth = Math.max(monthRun, dayRun);
+      if (worstRunBoth <= getMaxBatteryKwh(stations) * 1.05) break;
+    }
+    stations = Math.min(stations, MAX_STATIONS);
+
+    // Battery: always 2 modules for civil
+    batteryModules = CIVIL_MAX_BATTERY_MODULES;
+
+  } else if (isPolarNoWind) {
+    // === INDUSTRIAL POLAR ===
+    const minStationsForH2 = Math.ceil(yearlyConsumption / (singleStationYearlyProduction * H2_EFFICIENCY));
+    const minStationsForAnnual = Math.ceil(yearlyConsumption / singleStationYearlyProduction);
+    stations = Math.max(minStationsForAnnual, Math.min(minStationsForH2, MAX_STATIONS));
+  } else {
+    // === INDUSTRIAL STANDARD ===
+    for (stations = 1; stations <= MAX_STATIONS; stations++) {
+      const monthRun = monthlyWorstRun(stations);
+      const dayRun = dailySeries?.available ? dailyWorstRun(stations) : monthRun;
+      const worstRunBoth = Math.max(monthRun, dayRun);
+      if (worstRunBoth <= getMaxBatteryKwh(stations) * 1.05) break;
+    }
+  }
+  stations = Math.min(stations, MAX_STATIONS);
+
+  // === STEP 3: Size battery ===
+  if (!isCivil) {
+    const worstRun = Math.max(monthlyWorstRun(stations), dailySeries?.available ? dailyWorstRun(stations) : 0);
+    const deficitModules = Math.ceil(worstRun / BATTERY_MODULE_KWH);
+    const minAutonomyModules = Math.ceil(dailyConsumption * autonomyDays / BATTERY_MODULE_KWH);
+    batteryModules = Math.max(deficitModules, minAutonomyModules, 1);
+    batteryModules = Math.min(batteryModules, getMaxBatteryModules(stations));
+  }
+
+  // === STEP 4: Seasonal balance ===
+  let calcWinterDeficit = 0;
+  let calcSummerSurplus = 0;
+  let deficitMonthCount = 0;
+  for (let i = 0; i < 12; i++) {
+    const bal = (monthlyTotals[i].total * stations - dailyConsumption) * DAYS_PER_MONTH[i];
+    if (bal < 0) { calcWinterDeficit += -bal; deficitMonthCount++; }
+    else calcSummerSurplus += bal;
+  }
+
+  // === STEP 5: H2 check (industrial only) ===
+  if (!isCivil) {
+    const worstRun = Math.max(monthlyWorstRun(stations), dailySeries?.available ? dailyWorstRun(stations) : 0);
+    const maxBatNp = getMaxBatteryKwh(stations);
+    if ((isPolarNoWind || worstRun > maxBatNp * 1.1) && calcSummerSurplus > 0) {
+      useH2 = true;
+      h2Hubs = 1;
+      winterDeficit = calcWinterDeficit;
+      summerSurplus = calcSummerSurplus;
+
+      const h2Available = calcSummerSurplus * H2_EFFICIENCY;
+      if (h2Available < calcWinterDeficit) {
+        warnings.push(`H2 covers ${Math.round(h2Available / calcWinterDeficit * 100)}% of winter deficit.`);
+      }
+
+      // With H2, battery is short-term buffer only
+      batteryModules = Math.min(
+        Math.max(1, Math.ceil(dailyConsumption * 2 / USABLE_KWH_PER_MODULE)),
+        getMaxBatteryModules(stations)
+      );
+    }
+  }
+
+  // === STEP 6: Warnings ===
+  const yearlyProd = singleStationYearlyProduction * stations;
+  if (yearlyProd < yearlyConsumption && !useH2) {
+    warnings.push(`Annual production (${Math.round(yearlyProd)} kWh) < consumption (${Math.round(yearlyConsumption)} kWh). Grid hybrid or load reduction recommended.`);
+  }
+  if (isCivil && !grid && calcWinterDeficit > 0) {
+    warnings.push(`${deficitMonthCount} deficit months (${Math.round(calcWinterDeficit)} kWh). Enable Grid or reduce consumption.`);
+  }
+
+  const deficitMonths = deficitMonthCount;
+  const worstRun = Math.max(monthlyWorstRun(stations), dailySeries?.available ? dailyWorstRun(stations) : 0);
+
+  // === Civil: calculate max daily consumption for 1 station ===
+  let civilMaxDailyKwh: number | null = null;
+  if (isCivil) {
+    const maxBatKwh1 = CIVIL_MAX_BATTERY_MODULES * BATTERY_MODULE_KWH;
+    // Binary search: find max daily consumption where 1 station covers with 2-module battery
+    let lo = 0.5, hi = 50;
+    for (let iter = 0; iter < 30; iter++) {
+      const mid = (lo + hi) / 2;
+      // Calculate worst deficit run for 1 station at this consumption
+      let worst = 0;
+      for (let start = 0; start < 12; start++) {
+        let run = 0;
+        for (let j = 0; j < 12; j++) {
+          const idx = (start + j) % 12;
+          const bal = (monthlyTotals[idx].total * 1 - mid) * DAYS_PER_MONTH[idx];
+          if (bal < 0) run += -bal;
+          else run = Math.max(0, run - bal);
+        }
+        if (run > worst) worst = run;
+      }
+      if (worst <= maxBatKwh1 * 1.05) lo = mid;
+      else hi = mid;
+    }
+    civilMaxDailyKwh = Math.round(lo * 10) / 10;  // round to 0.1
+  }
+
+  // Final calculations
+  const batteryKwh = batteryModules * BATTERY_MODULE_KWH;
+  const yearlyProduction = yearlyProd;
+  const yearlyBalance = yearlyProduction - yearlyConsumption;
+  const worstCoverage = (worstMonth.total * stations / dailyConsumption) * 100;
+
+  let batteryReason: string;
+  if (useH2) {
+    batteryReason = 'Short-term buffer (H2 handles seasonal)';
+  } else if (worstRun > 0) {
+    batteryReason = `Covers ${Math.round(worstRun)} kWh worst-case deficit (${dailySeries?.available ? 'daily' : 'monthly'} resolution)`;
+  } else {
+    batteryReason = `${autonomyDays}-day autonomy buffer`;
+  }
+
+  return {
+    worstMonth: {
+      month: worstMonth.month,
+      monthName: MONTH_NAMES[worstMonth.month - 1],
+      dailyProduction: worstMonth.total,
+      windProduction: worstMonth.wind,
+      avgWind: worstMonth.avgWind,
+      coverage: worstCoverage,
+      coverageWithWind: worstCoverage,
+      deficit: Math.max(0, dailyConsumption - worstMonth.total * stations)
+    },
+    bestMonth: {
+      month: bestMonth.month,
+      monthName: MONTH_NAMES[bestMonth.month - 1],
+      dailyProduction: bestMonth.total,
+      surplus: bestMonth.total * stations - dailyConsumption
+    },
+    deficitMonths,
+    civilMaxDailyKwh,
+    avgDailyProduction: yearlyProduction / 365,
+    yearlyProduction,
+    yearlyConsumption,
+    yearlyBalance,
+    h2Solution: useH2 ? {
+      enabled: true,
+      hubs: h2Hubs,
+      summerSurplus: Math.round(summerSurplus),
+      winterDeficit: Math.round(winterDeficit),
+      h2Available: Math.round(summerSurplus * H2_EFFICIENCY)
+    } : null,
+    recommendation: {
+      stations,
+      panelsPerStation,
+      panelScaleFromDefault,
+      usePolarFrame: isPolarNoWind,
+      windTurbine: useWindTurbine,
+      windTurbineCount: useWindTurbine ? stations : 0,
+      windReason: useWindTurbine
+        ? `Wind ${avgWind.toFixed(1)} m/s ≥ 4.0 m/s · subject to site wind verification`
+        : `Wind ${avgWind.toFixed(1)} m/s < 4.0 m/s threshold`,
+      windProduction: {
+        worst: worstMonth.wind,
+        avg: monthlyTotals.reduce((sum, m) => sum + m.wind, 0) / 12
+      },
+      batteryKwh,
+      batteryModules,
+      batteryReason,
+      batteryDerating: batDerating,
+      warnings
+    }
+  };
+}
+
+// Select optimal battery configuration
+function selectBatteryConfig(requiredKwh: number): {
+  totalCapacity: number;
+  moduleCount: number;
+  cellType: string;
+  pricePerModule: number;
+} {
+  const modules = [
+    { cellType: 'LiFePO₄ 314Ah', capacity: 16.08, price: 832 },
+    { cellType: 'LiFePO₄ 280Ah', capacity: 14.34, price: 742 },
+    { cellType: 'LiFePO₄ 206Ah', capacity: 10.55, price: 546 },
+  ];
+
+  // Find configuration with minimum modules
+  let best = { mod: modules[0], qty: Math.ceil(requiredKwh / modules[0].capacity) };
+
+  for (const mod of modules) {
+    const qty = Math.ceil(requiredKwh / mod.capacity);
+    if (qty < best.qty || (qty === best.qty && mod.price * qty < best.mod.price * best.qty)) {
+      best = { mod, qty };
+    }
+  }
+
+  return {
+    totalCapacity: best.mod.capacity * best.qty,
+    moduleCount: best.qty,
+    cellType: best.mod.cellType,
+    pricePerModule: best.mod.price
+  };
+}
+
+// ============================================
+// H2-HUB SEASONAL STORAGE CALCULATION
+// ============================================
+// H2-Hub specs:
+// - Electrolyzer: Enapter EL 4.1, 500 NL/h (~1 kg H2 per 22h), 2.4 kW
+// - Fuel Cell: H2SYS AIRCELL 500W, 50% efficiency
+// - Storage: 6× Hexagon Purus 700bar tanks = 12 kg H2
+// - H2 energy: 33.3 kWh/kg (LHV)
+// - Electrical output: 12 kg × 33.3 kWh × 50% = ~200 kWh
+// - Round-trip efficiency: ~35% (electrolyzer ~70% × fuel cell ~50%)
+// - Total cost: €33,100
+
+interface H2HubCalculation {
+  recommended: boolean;
+  reason: string;
+  stationsWithH2: number;
+  batteryKwh: number;
+  batteryModules: number;
+  h2Hubs: number;
+  summerSurplusKwh: number;
+  winterDeficitKwh: number;
+  h2AvailableKwh: number;  // surplus × 0.35
+  h2StorageKg: number;
+  h2CapacityKwh: number;
+  costWithH2_eur: number;
+  costWithoutH2_eur: number;
+  savings_eur: number;
+  savingsPercent: number;
+}
+
+function calculateH2HubAlternative(
+  dailyConsumption: number,
+  monthlyData: MonthlyAggregate[],
+  zone: string,
+  stationsWithoutH2: number,
+  batteryKwhWithoutH2: number,
+  avgWind: number
+): H2HubCalculation | null {
+  const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  // H2 constants
+  const H2_ROUND_TRIP_EFFICIENCY = 0.35;  // 70% electrolyzer × 50% fuel cell
+  const H2_HUB_CAPACITY_KWH = 200;  // 12 kg × 33.3 kWh/kg × 50% FC
+  const H2_HUB_STORAGE_KG = 12;
+  const H2_HUB_PRICE_EUR = 33100;
+  const MAX_H2_HUBS = 2;  // Max 2 hubs = 400 kWh capacity
+
+  // Station constants
+  const STATION_COST_EUR = 15000;
+  const BATTERY_PER_STATION_KWH = 48;  // 3 × 16 kWh modules
+  const BATTERY_MODULES_PER_STATION = 3;
+  const BATTERY_MODULE_COST_EUR = 900;
+
+  // H2-Hub evaluation is no longer restricted to Arctic zone.
+  // Any location with significant seasonal deficit may benefit from H2.
+  // The optimizer will compare H2 vs battery-only on cost basis.
+
+  const winterMonths = [0, 1, 10, 11]; // Jan, Feb, Nov, Dec (0-indexed)
+  const summerMonths = [3, 4, 5, 6, 7, 8]; // Apr-Sep
+
+  // Try 1, 2, 3, 4 stations with H2-Hub
+  for (let tryStations = 1; tryStations <= 4; tryStations++) {
+    let summerSurplus = 0;
+    let winterDeficit = 0;
+
+    for (let i = 0; i < 12; i++) {
+      const dailyProduction = monthlyData[i].E_d * tryStations;
+      const dailyBalance = dailyProduction - dailyConsumption;
+      const monthlyBalance = dailyBalance * DAYS_PER_MONTH[i];
+
+      if (summerMonths.includes(i) && monthlyBalance > 0) {
+        summerSurplus += monthlyBalance;
+      }
+      if (winterMonths.includes(i) && monthlyBalance < 0) {
+        winterDeficit += -monthlyBalance;
+      }
+    }
+
+    // H2 available = summer surplus × round-trip efficiency
+    const h2AvailableKwh = summerSurplus * H2_ROUND_TRIP_EFFICIENCY;
+
+    // How many H2-Hubs needed?
+    const h2HubsNeeded = Math.ceil(winterDeficit / H2_HUB_CAPACITY_KWH);
+
+    // Check if H2 covers winter deficit AND within max hubs
+    if (h2AvailableKwh >= winterDeficit && h2HubsNeeded <= MAX_H2_HUBS) {
+      // H2 solution works with this many stations!
+      const batteryKwh = tryStations * BATTERY_PER_STATION_KWH;
+      const batteryModules = tryStations * BATTERY_MODULES_PER_STATION;
+
+      // Cost with H2
+      const costWithH2 =
+        tryStations * STATION_COST_EUR +
+        batteryModules * BATTERY_MODULE_COST_EUR +
+        h2HubsNeeded * H2_HUB_PRICE_EUR;
+
+      // Cost without H2 (standard solution)
+      const batteryModulesWithoutH2 = Math.ceil(batteryKwhWithoutH2 / 16.08);
+      const costWithoutH2 =
+        stationsWithoutH2 * STATION_COST_EUR +
+        batteryModulesWithoutH2 * BATTERY_MODULE_COST_EUR;
+
+      const savings = costWithoutH2 - costWithH2;
+
+      // Only recommend if H2 is cheaper
+      if (savings > 0) {
+        return {
+          recommended: true,
+          reason: `${tryStations} station${tryStations > 1 ? 's' : ''} + ${h2HubsNeeded}× H2-Hub covers ${Math.round(winterDeficit)} kWh winter deficit`,
+          stationsWithH2: tryStations,
+          batteryKwh,
+          batteryModules,
+          h2Hubs: h2HubsNeeded,
+          summerSurplusKwh: Math.round(summerSurplus),
+          winterDeficitKwh: Math.round(winterDeficit),
+          h2AvailableKwh: Math.round(h2AvailableKwh),
+          h2StorageKg: h2HubsNeeded * H2_HUB_STORAGE_KG,
+          h2CapacityKwh: h2HubsNeeded * H2_HUB_CAPACITY_KWH,
+          costWithH2_eur: Math.round(costWithH2),
+          costWithoutH2_eur: Math.round(costWithoutH2),
+          savings_eur: Math.round(savings),
+          savingsPercent: Math.round((savings / costWithoutH2) * 100)
+        };
+      }
+    }
+  }
+
+  // H2 doesn't work (deficit > 200 kWh or not cost-effective)
+  return null;
+}
+
+// Component prices from catalog (reference_price in USD)
+// Source: XDLE Quotation 10269 Oct 2025, Vertiv OEM, China OEM quotes
+// Updated: 2026-03-14 - Panels and optimizers separated
+const COMPONENT_PRICES = {
+  // Solar panels (from DB) - панели БЕЗ оптимизаторов
+  panel_720w_world: 65,       // Risen RSM132-8-720BHDG (China)
+  panel_720w_eu: 95,          // Heckert Solar 720W TOPCon (Germany)
+  panel_720w_eu_al2o3: 120,   // Heckert Solar 720W TOPCon + Al₂O₃ coating (Germany)
+  panel_720w_eu_premium: 100, // Sonnenstromfabrik 720W TOPCon (Germany)
+
+  // MPPT chargers (from DB)
+  mppt_4kw: 180,           // 4kW MPPT OEM
+  mppt_3kw: 162,           // MPPT 3kW OEM
+  mppt_victron: 548,       // Victron SmartSolar 250/100 (€507)
+
+  // Rectifiers (from DB)
+  rect_4kw: 130,           // Rectifier 4kW OEM
+  rect_3kw: 93,            // 3kW Rectifier OEM
+
+  // Batteries 16S1P 48V (from DB)
+  bat_206ah: 546,          // Battery Module 16S1P 206Ah
+  bat_280ah: 742,          // Battery Module 16S1P 280Ah
+  bat_314ah: 832,          // Battery Module 16S1P 314Ah
+  bat_lto: 770,            // LTO Yinlong 22S1P 45Ah
+
+  // Structure & mechanics (from DB)
+  structure_continental: 2500,  // Рама алюминиевая €1200 + монтаж (6 panels)
+  structure_polar: 3200,       // Рама 8 панелей для полярных широт
+  structure_tactical: 3000,    // PVF180 4 panels (desert/high wind)
+  slewing_drive: 450,      // Slewing Drive (2-axis) from DB
+  actuator_storm: 400,
+
+  // Wind (from DB - prices are 0, using estimates)
+  vawt_500w: 1200,
+  supercap_165f: 600,
+  vawt_mast: 300,
+
+  // Thermal - Desert (from DB)
+  compressor_750w: 400,    // HUAYI HVY75AA - DB has 0
+  pcm_rt28: 1380,          // PCM RT28HC Rubitherm €1277.5
+  awg_module: 1500,        // AWG Module - DB has 0
+  rollbond: 300,           // Roll Bond Condenser - DB has 0
+  ald_coating_per_panel: 50,
+
+  // Thermal - Arctic (from DB)
+  ptc_heater_100w: 40,     // PTC Heating Film 100W - DB has 0
+  pcm_rt10: 945,           // PCM RT10HC Rubitherm €875
+
+  // Electronics (from DB)
+  controller_smu48: 200,   // SMU48B Controller - DB has 0
+  controller_victron: 320, // Victron Cerbo GX €296
+  sensors_package: 145,    // Метеостанция 70 + датчики ~75
+  conn_4g: 150,            // 4G LTE Module - DB has 0
+  conn_iridium: 800,       // Iridium Satellite Modem - DB has 0
+
+  // DC converters
+  dcdc_48_24: 80,
+  dcdc_48_12: 80,
+};
+
+// Calculate price from real component costs
+function calculatePrice(
+  stationsInput: number,
+  batteryKwh: number,
+  windTurbine: boolean,
+  zone: string,
+  originPref: 'EU' | 'World' = 'EU',
+  peakPowerKw: number = 0,
+  maxGust: number = 0,  // Max gust for frame selection
+  h2Solution: { enabled: boolean; hubs: number } | null = null,  // H2 solution
+  usePolarFrame: boolean = false,  // 8-panel frame for polar locations
+  hideMode: boolean = false  // Hide mode — force PVF180 (4 panels, camouflage)
+): {
+  base: number;
+  battery: number;
+  wind: number;
+  thermal: number;
+  h2: number;
+  total: number;
+  totalEur: number;
+  margin: string;
+  bom: { item: string; qty: number; unitPrice: number; total: number }[];
+  selectedBattery: { capacity: number; modules: number; type: string };
+  actualStations: number;
+  h2Hubs: number;
+} {
+  const MAX_BATTERIES_PER_STATION = 3;
+  let stations = stationsInput;
+  const bom: { item: string; qty: number; unitPrice: number; total: number }[] = [];
+  const addItem = (item: string, qty: number, unitPrice: number) => {
+    bom.push({ item, qty, unitPrice, total: qty * unitPrice });
+  };
+
+  // Fetch components from database
+  const mpptComp = getComponent('MPPT', originPref);
+  const controllerComp = getComponent('Controller', originPref);
+  const inverterComp = getComponent('Inverter-Charger', originPref) || getComponent('Inverter', originPref);
+
+  // Use DB prices or fallbacks
+  const mpptPrice = getPriceUSD(mpptComp, COMPONENT_PRICES.mppt_4kw);
+  const mpptName = mpptComp?.name || 'MPPT Charger 4kW';
+  const controllerPrice = getPriceUSD(controllerComp, COMPONENT_PRICES.controller_smu48);
+  const controllerName = controllerComp?.name || 'System Controller';
+
+  // Panel selection based on zone and origin preference
+  // Only Desert needs Al₂O₃ coating (sand abrasion protection)
+  // Arctic and Continental use standard panels
+  const needsCoating = zone === 'desert';
+
+  let panelName: string;
+  let panelPrice: number;
+
+  if (originPref === 'EU') {
+    panelName = needsCoating ? 'Heckert Solar 720W TOPCon + Al₂O₃' : 'Heckert Solar 720W TOPCon';
+    panelPrice = needsCoating ? COMPONENT_PRICES.panel_720w_eu_al2o3 : COMPONENT_PRICES.panel_720w_eu;
+  } else {
+    panelName = 'Risen RSM132-8-720BHDG';
+    panelPrice = COMPONENT_PRICES.panel_720w_world;
+  }
+
+  // Frame selection:
+  // - PVF8: 8 panels (5.76 kWp) — polar locations without wind
+  // - PVFB: 6 panels (4.32 kWp) — feathering, <120 km/h gust
+  // - PVF90: 6 panels — fold 90°, 120-180 km/h gust
+  // - PVF180: 4 panels (2.88 kWp) — fold 180°, >180 km/h or desert
+  const usesPVF180 = hideMode || zone === 'desert' || maxGust > 180;
+  const usesPVF90 = !usesPVF180 && !usePolarFrame && maxGust >= 120;
+
+  let frameType: string;
+  let panelQty: number;
+  let structurePrice: number;
+
+  if (hideMode) {
+    frameType = 'PVF180';
+    panelQty = 4;
+    structurePrice = COMPONENT_PRICES.structure_tactical;
+  } else if (usePolarFrame) {
+    frameType = 'PVF8';
+    panelQty = 8;
+    structurePrice = COMPONENT_PRICES.structure_polar;
+  } else if (usesPVF180) {
+    frameType = 'PVF180';
+    panelQty = 4;
+    structurePrice = COMPONENT_PRICES.structure_tactical;
+  } else if (usesPVF90) {
+    frameType = 'PVF90';
+    panelQty = 6;
+    structurePrice = COMPONENT_PRICES.structure_continental;
+  } else {
+    frameType = 'PVFB';
+    panelQty = 6;
+    structurePrice = COMPONENT_PRICES.structure_continental;
+  }
+
+  // Add panels (no optimizers - not used on iONE)
+  addItem(panelName, panelQty * stations, panelPrice);
+
+  // MPPT: 2 per station
+  addItem(mpptName, 2 * stations, mpptPrice);
+
+  // Structure
+  addItem(`Frame ${frameType}`, stations, structurePrice);
+
+  // Slewing drive (from DB: $450)
+  addItem('Slewing Drive 2-axis', stations, COMPONENT_PRICES.slewing_drive);
+
+  // Storm-fold actuators are integral to all frame types (included in frame price)
+
+  // Battery selection: compare total cost of LiFePO4+thermal vs LTO
+  // LiFePO4: cheap per kWh but needs thermal management in extreme zones
+  // LTO: expensive per kWh but works -40°C to +55°C without cooling/heating
+
+  // LiFePO4 options
+  const batteryOptions = [
+    { name: 'LiFePO4 16S1P 314Ah (16.08kWh)', capacity: 16.08, price: COMPONENT_PRICES.bat_314ah },
+    { name: 'LiFePO4 16S1P 280Ah (14.34kWh)', capacity: 14.34, price: COMPONENT_PRICES.bat_280ah },
+    { name: 'LiFePO4 16S1P 206Ah (10.55kWh)', capacity: 10.55, price: COMPONENT_PRICES.bat_206ah },
+  ];
+
+  // Find best LiFePO4 option (minimum modules first, then lowest cost if tie)
+  let bestLFP = batteryOptions[0];
+  let bestLFPQty = Math.ceil(batteryKwh / bestLFP.capacity);
+  for (const opt of batteryOptions) {
+    const qty = Math.ceil(batteryKwh / opt.capacity);
+    // Prefer fewer modules; if equal, prefer cheaper
+    if (qty < bestLFPQty || (qty === bestLFPQty && opt.price * qty < bestLFP.price * bestLFPQty)) {
+      bestLFP = opt;
+      bestLFPQty = qty;
+    }
+  }
+
+  // LTO option
+  const ltoCapacity = 2.28;
+  const ltoQty = Math.ceil(batteryKwh / ltoCapacity);
+  const ltoCost = ltoQty * COMPONENT_PRICES.bat_lto;
+
+  // LiFePO4 cost including thermal equipment for extreme zones
+  let lfpThermalCost = 0;
+  if (zone === 'arctic') {
+    // LiFePO4 needs: PTC heaters + PCM RT10HC + Iridium
+    lfpThermalCost = bestLFPQty * COMPONENT_PRICES.ptc_heater_100w +
+                     stations * COMPONENT_PRICES.pcm_rt10 +
+                     stations * COMPONENT_PRICES.conn_iridium;
+  } else if (zone === 'desert') {
+    // LiFePO4 needs: Compressor + PCM RT28HC + AWG + Roll Bond
+    // Note: ALD coating only needed for World origin (EU panels have Al₂O₃ built-in)
+    const panelQtyCalc = 4; // tactical has 4 panels
+    const coatingCost = originPref === 'World' ? panelQtyCalc * stations * COMPONENT_PRICES.ald_coating_per_panel : 0;
+    lfpThermalCost = stations * (COMPONENT_PRICES.compressor_750w +
+                                 COMPONENT_PRICES.pcm_rt28 +
+                                 COMPONENT_PRICES.awg_module +
+                                 COMPONENT_PRICES.rollbond) + coatingCost;
+  }
+
+  const lfpTotalCost = bestLFP.price * bestLFPQty + lfpThermalCost;
+
+  // Compare: use LTO only if it's cheaper overall (very rare - LTO is ~6x more expensive per kWh)
+  // LiFePO4 handles 1C discharge fine (16kWh module = 16kW peak), so peak power is NOT a factor
+  // LTO benefits: works -40°C to +55°C without thermal management, 20k cycles vs 5k
+  const useLTO = ltoCost < lfpTotalCost && (zone === 'desert' || zone === 'arctic');
+
+  // Battery modules - use the selected type
+  let batName: string;
+  let batPrice: number;
+  let batQty: number;
+  let batCapacityPerModule: number;
+
+  if (useLTO) {
+    batName = 'LTO Yinlong 22S1P 45Ah (2.28kWh)';
+    batPrice = COMPONENT_PRICES.bat_lto;
+    batCapacityPerModule = ltoCapacity;
+    batQty = ltoQty;
+  } else {
+    batName = bestLFP.name;
+    batPrice = bestLFP.price;
+    batQty = bestLFPQty;
+    batCapacityPerModule = bestLFP.capacity;
+  }
+
+  // Note: batteries are distributed across stations but don't require adding stations
+  // The station count is determined by yearly energy balance, not battery count
+
+  addItem(batName, batQty, batPrice);
+
+  // Controller & sensors - MASTER ONLY (Slave stations don't need these)
+  addItem(controllerName, 1, controllerPrice);
+  addItem('Sensor Kit (meteo + radiation + temp + IMU)', 1, COMPONENT_PRICES.sensors_package);
+  addItem('4G/LTE Module', 1, COMPONENT_PRICES.conn_4g);
+
+  // Wind turbine
+  if (windTurbine) {
+    addItem('VAWT 500W H-Darrieus', stations, COMPONENT_PRICES.vawt_500w);
+    addItem('Supercapacitor 165F/48V', stations, COMPONENT_PRICES.supercap_165f);
+    addItem('VAWT Mounting Mast', stations, COMPONENT_PRICES.vawt_mast);
+  }
+
+  // Zone-specific thermal (LTO needs no active cooling/heating)
+  let thermalTotal = 0;
+  if (zone === 'arctic') {
+    if (useLTO) {
+      // LTO: only satellite comms for remote arctic, no heating needed
+      addItem('Iridium Satellite Modem', 1, COMPONENT_PRICES.conn_iridium);  // Master only
+      thermalTotal = COMPONENT_PRICES.conn_iridium;
+    } else {
+      // LiFePO4: needs heating
+      addItem('PTC Heating Film 100W', batQty, COMPONENT_PRICES.ptc_heater_100w);
+      addItem('PCM RT10HC Rubitherm', stations, COMPONENT_PRICES.pcm_rt10);
+      addItem('Iridium Satellite Modem', 1, COMPONENT_PRICES.conn_iridium);  // Master only
+      thermalTotal = batQty * COMPONENT_PRICES.ptc_heater_100w +
+                     stations * COMPONENT_PRICES.pcm_rt10 +
+                     COMPONENT_PRICES.conn_iridium;
+    }
+  } else if (zone === 'desert') {
+    // Note: Al₂O₃ coating is now included in panel price for EU origin
+    // For World origin, add coating separately
+    const needsSeparateCoating = originPref === 'World';
+
+    if (useLTO) {
+      // LTO: passive cooling only, no compressor needed
+      if (needsSeparateCoating) {
+        addItem('ALD Al₂O₃ Coating', panelQty * stations, COMPONENT_PRICES.ald_coating_per_panel);
+      }
+      addItem('AWG Module', stations, COMPONENT_PRICES.awg_module);
+      thermalTotal = (needsSeparateCoating ? panelQty * stations * COMPONENT_PRICES.ald_coating_per_panel : 0) +
+                     stations * COMPONENT_PRICES.awg_module;
+    } else {
+      // LiFePO4: needs active cooling
+      addItem('HUAYI HVY75AA DC Compressor', stations, COMPONENT_PRICES.compressor_750w);
+      addItem('PCM RT28HC Rubitherm', stations, COMPONENT_PRICES.pcm_rt28);
+      addItem('AWG Module', stations, COMPONENT_PRICES.awg_module);
+      addItem('Roll Bond Condenser Panels', stations, COMPONENT_PRICES.rollbond);
+      if (needsSeparateCoating) {
+        addItem('ALD Al₂O₃ Coating', panelQty * stations, COMPONENT_PRICES.ald_coating_per_panel);
+      }
+      thermalTotal = stations * (COMPONENT_PRICES.compressor_750w +
+                                COMPONENT_PRICES.pcm_rt28 +
+                                COMPONENT_PRICES.awg_module +
+                                COMPONENT_PRICES.rollbond) +
+                     (needsSeparateCoating ? panelQty * stations * COMPONENT_PRICES.ald_coating_per_panel : 0);
+    }
+  }
+
+  // H2-Hub for seasonal storage (Arctic)
+  // EU: €34,180 (Enapter + H2SYS + Hexagon + Haskel + Rittal + EDI)
+  // World: €21,580 (CN electrolyser + CN FC + Hexagon + Haskel + CN enclosure + EDI)
+  let h2Total = 0;
+  const h2Hubs = h2Solution?.enabled ? h2Solution.hubs : 0;
+  if (h2Hubs > 0) {
+    const H2_HUB_PRICE_EUR = originPref === 'EU' ? 34180 : 21580;
+    const H2_HUB_PRICE_USD = Math.round(H2_HUB_PRICE_EUR * 1.08);
+    const h2Label = originPref === 'EU' ? 'H2-HUB (EU)' : 'H2-HUB (World)';
+    addItem(h2Label, h2Hubs, H2_HUB_PRICE_USD);
+    h2Total = h2Hubs * H2_HUB_PRICE_USD;
+  }
+
+  // Calculate totals
+  const bomTotal = bom.reduce((sum, item) => sum + item.total, 0);
+
+  // Categories for display
+  const baseTotal = bom.filter(b =>
+    b.item.includes('Panel') || b.item.includes('MPPT') ||
+    b.item.includes('Structure') || b.item.includes('Drive') ||
+    b.item.includes('Actuator') || b.item.includes('Controller') ||
+    b.item.includes('Sensor') || b.item.includes('4G')
+  ).reduce((sum, b) => sum + b.total, 0);
+
+  const batteryTotal = bom.filter(b => b.item.includes('LiFePO') || b.item.includes('LTO')).reduce((sum, b) => sum + b.total, 0);
+  const windTotal = bom.filter(b =>
+    b.item.includes('VAWT') || b.item.includes('Supercap')
+  ).reduce((sum, b) => sum + b.total, 0);
+
+  // USD to EUR (approximate)
+  const usdToEur = 0.92;
+  const totalEur = Math.round(bomTotal * usdToEur);
+
+  return {
+    base: baseTotal,
+    battery: batteryTotal,
+    wind: windTotal,
+    h2: h2Total,
+    thermal: thermalTotal,
+    total: bomTotal,
+    totalEur,
+    margin: 'BOM cost shown. Retail = BOM × 1.8–2.2',
+    bom,
+    selectedBattery: {
+      capacity: batCapacityPerModule * batQty,
+      modules: batQty,
+      type: batName.split(' (')[0] // "LiFePO4 16S1P 314Ah" or "LTO Yinlong 22S1P 45Ah"
+    },
+    actualStations: stations,
+    h2Hubs
+  };
+}
+
+// === NEW SIZING ENGINE WRAPPER ===
+async function runNewSizingEngine(
+  lat: number,
+  lon: number,
+  dailyKwh: number,
+  consumptionW: number,
+  mode: 'industrial' | 'civil',
+  grid: boolean,
+  heatPump: boolean,
+  zoneOverride: string,
+  componentOrigin: 'EU' | 'World',
+  peakPower: number,
+  loss: number,
+  avgWindMs: number,        // from legacy 3-source median
+  maxGustKmh: number,       // from legacy Open-Meteo 5yr
+  loadPatternInput?: string,
+  hideMode: boolean = false,
+): Promise<SizingEngineOutput | null> {
+  try {
+    console.log('SizingEngine v4: starting for', { lat, lon, dailyKwh, mode, avgWindMs: avgWindMs.toFixed(1) });
+
+    // 1. Build hourly climate dataset
+    const scenarioMode: ScenarioMode = 'typical';
+    const climate = await getHourlyClimateYear(lat, lon, peakPower, loss, scenarioMode);
+    if (!climate.available) {
+      console.log('SizingEngine v4: climate data unavailable, falling back to legacy');
+      return null;
+    }
+
+    // 2. Detect zone from climate data
+    const zoneResult = detectZoneFromClimate(
+      climate, lat,
+      zoneOverride !== 'continental' ? zoneOverride : undefined
+    );
+    console.log('SizingEngine v4: zone detected =', zoneResult.zone, zoneResult.method);
+
+    // 3. Classify load (helper only, NOT sizing driver)
+    const loadClass = classifyLoadV4(dailyKwh, consumptionW);
+    const loadPattern: LoadPattern = (loadPatternInput as LoadPattern) ||
+      (mode === 'civil' ? 'residential' : loadClass.defaultPattern);
+
+    // 4. Select reliability policy
+    // industrial_standard allows ≤48 unmet hours/year (realistic for off-grid)
+    // industrial_critical (0 unmet) available via explicit request
+    const policy = mode === 'civil' && grid
+      ? RELIABILITY_POLICIES.grid_assisted
+      : mode === 'civil'
+        ? RELIABILITY_POLICIES.civil_offgrid
+        : RELIABILITY_POLICIES.industrial_standard;
+
+    // 5. Build SiteInput and run optimizer
+    // avgWindMs and maxGustKmh come from legacy 3-source aggregation (more accurate)
+    const siteInput: SiteInput = {
+      lat, lon,
+      dailyConsumptionKwh: dailyKwh,
+      mode, grid, heatPump,
+      zoneOverride,
+      componentOrigin,
+      loadPattern,
+      scenarioMode,
+      reliabilityPolicy: policy,
+      hideMode,
+    };
+
+    const result = optimize(siteInput, climate, zoneResult, avgWindMs, maxGustKmh);
+
+    console.log('SizingEngine v4: completed in', result.runtimeMs, 'ms,',
+      result.candidatesEvaluated, 'candidates,',
+      result.candidatesFeasible, 'feasible,',
+      'avgWind=', avgWindMs.toFixed(1), 'm/s');
+    return result;
+
+  } catch (error) {
+    console.error('SizingEngine v4: error, falling back to legacy:', error);
+    return null;
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const {
+      address,
+      lat,
+      lon,
+      dailyConsumption,
+      hourlyConsumption,
+      consumption,  // Watts (from frontend)
+      peakPower = 4.32,
+      loss = 14,
+      autonomyDays = 3,
+      zone = 'continental',
+      components = 'EU', // EU or World
+      acPhase = null,     // '1' or '3'
+      acVoltage = null,   // ['230V'] or ['400V'] etc.
+      mode = 'industrial', // 'industrial' or 'civil'
+      grid = false         // civil grid-hybrid mode
+    } = body;
+
+    const hideMode = body.hide || false;  // Hide mode — force PVF180 (4 panels, camouflage)
+
+    const originPref = components as 'EU' | 'World';
+
+    // Ensure peakPower has valid value (default 4.32 kWp for 6x720W panels)
+    const actualPeakPower = peakPower && peakPower > 0 ? peakPower : 4.32;
+
+    // Validate consumption (consumption = Watts, hourlyConsumption = kWh/h, dailyConsumption = kWh/day)
+    console.log('PVGIS API: Input consumption:', { consumption, hourlyConsumption, dailyConsumption });
+    const dailyKwh = dailyConsumption ||
+                     (hourlyConsumption ? hourlyConsumption * 24 : null) ||
+                     (consumption ? consumption * 24 / 1000 : null);  // Watts → kWh/day
+    if (!dailyKwh || dailyKwh <= 0) {
+      return NextResponse.json({
+        status: 'error',
+        message: 'Daily or hourly consumption is required'
+      }, { status: 400 });
+    }
+
+    // Auto-detect zone by latitude if not specified
+    let detectedZone = zone;
+
+    // Get coordinates
+    let coords: { lat: number; lon: number; display?: string; country?: string } = { lat, lon };
+    if (!lat || !lon) {
+      if (!address) {
+        console.log('PVGIS API: No address provided, lat:', lat, 'lon:', lon);
+        return NextResponse.json({
+          status: 'error',
+          message: 'Either address or coordinates (lat, lon) required'
+        }, { status: 400 });
+      }
+
+      console.log('PVGIS API: Geocoding address:', address);
+      const geocoded = await geocodeAddress(address);
+      if (!geocoded) {
+        console.log('PVGIS API: Geocode failed for:', address);
+        return NextResponse.json({
+          status: 'error',
+          message: `Could not geocode address "${address}". Try coordinates instead.`
+        }, { status: 400 });
+      }
+      console.log('PVGIS API: Geocoded to:', geocoded.lat, geocoded.lon);
+      coords = geocoded;
+    }
+
+    // Auto-detect zone by latitude if not explicitly set or is default
+    if (zone === 'continental') {
+      const lat = coords.lat;
+      if (lat > 64 || lat < -64) {
+        detectedZone = 'arctic';
+      } else if (lat < 35 && lat > 15) {
+        // Rough desert belt (Sahara, Middle East, etc.)
+        detectedZone = 'desert';
+      }
+      // else keep continental
+    }
+
+    // Determine load class
+    const consumptionW = consumption || Math.round(dailyKwh / 24 * 1000);
+    const loadClass = determineLoadClass(dailyKwh, consumptionW, 24);
+
+    // Fetch PVGIS data, daily series, wind data, and 5-year gusts in parallel
+    const [pvgisData, dailySeries, windData, gust5yrData, stationResult] = await Promise.all([
+      getPVGISData(coords.lat, coords.lon, actualPeakPower, loss),
+      getPVGISDailySeries(coords.lat, coords.lon, actualPeakPower, loss),
+      getWindData(coords.lat, coords.lon, detectedZone),
+      getMaxGust5yr(coords.lat, coords.lon),
+      getStationWindData(coords.lat, coords.lon)
+    ]);
+
+    if (!pvgisData) {
+      return NextResponse.json({
+        status: 'error',
+        message: 'Could not fetch solar data from PVGIS. Location may be outside coverage (Europe, Africa, parts of Asia).'
+      }, { status: 400 });
+    }
+
+    // Merge wind data into monthly aggregates
+    // Use derated station data if available, otherwise raw model data
+    if (windData) {
+      for (let i = 0; i < pvgisData.monthly.length; i++) {
+        const rawWind = windData.monthlyAvg[i] || 0;
+        const avgWind = stationResult ? stationResult.monthlyAvg[i] || 0 : rawWind;
+        pvgisData.monthly[i].avgWind = avgWind;
+        pvgisData.monthly[i].windProduction = calculateDailyWindEnergy(avgWind);
+      }
+    }
+
+    // Wind metrics — prefer derated station data over raw model data
+    const rawModelWind = windData?.yearlyAvg || pvgisData.monthly.reduce((sum, m) => sum + (m.avgWind || 0), 0) / 12;
+    const avgWindSpeed = stationResult ? stationResult.yearlyAvg : rawModelWind;
+    const maxHourlyWind = windData?.maxHourlyWind || 0;
+    const estimatedMaxGust = windData?.estimatedMaxGust || 0;
+    const gustFactor = windData?.gustFactor || 1.3;
+
+    // 5-year max gust from Open-Meteo Archive (in km/h)
+    const maxGust5yrKmh = gust5yrData?.maxGustKmh || 0;
+    const gust5yrYears = gust5yrData?.dataYears || 0;
+    console.log(`Frame selection: zone=${detectedZone}, max_gust_5yr=${maxGust5yrKmh.toFixed(1)} km/h`);
+
+    // NOTE: PVGIS data fetched for 4.32 kWp (6 panels). Panel scaling is handled
+    // inside calculateSystemRequirements based on actual panelsPerStation (4/6/8).
+    // Do NOT scale pvgisData here to avoid double-scaling.
+
+    // === TRY NEW SIZING ENGINE (v4) ===
+    // Pass legacy 3-source wind data (more accurate than single-source PVGIS seriescalc)
+    const newEngine = await runNewSizingEngine(
+      coords.lat, coords.lon, dailyKwh, consumptionW,
+      mode as 'industrial' | 'civil', grid, body.heatPump || false,
+      detectedZone, originPref, actualPeakPower, loss,
+      avgWindSpeed, maxGust5yrKmh,
+      body.loadPattern,
+      hideMode,
+    );
+    if (newEngine) {
+      console.log('SizingEngine v4: result available, stations=' +
+        newEngine.recommendation.config.stations +
+        ' battery=' + (newEngine.recommendation.config.batteryModules * 16.08).toFixed(1) + 'kWh' +
+        ' wind=' + newEngine.recommendation.config.windTurbines +
+        ' h2=' + newEngine.recommendation.config.h2Hubs +
+        ' feasible=' + newEngine.recommendation.result.feasible +
+        ' unmet=' + newEngine.recommendation.result.unmetHours + 'h');
+    }
+
+    // Legacy path continues below for backward compatibility
+    // Calculate system requirements — v2: seasonal adequacy first
+    const systemReqs = calculateSystemRequirements(dailyKwh, pvgisData.monthly, detectedZone, avgWindSpeed, loadClass, dailySeries, coords.lat, maxGust5yrKmh, mode, grid, hideMode);
+
+    // Calculate pricing (include H2 if recommended)
+    const pricing = calculatePrice(
+      systemReqs.recommendation.stations,
+      systemReqs.recommendation.batteryKwh,
+      systemReqs.recommendation.windTurbine,
+      detectedZone,
+      originPref,
+      actualPeakPower,
+      maxGust5yrKmh,
+      systemReqs.h2Solution,
+      systemReqs.recommendation.usePolarFrame,
+      hideMode
+    );
+
+    // Inverter selection (only if AC output requested)
+    let inverterSpec: string | null = null;
+    if (acPhase) {
+      const loadKw = (consumption || dailyKwh / 24 * 1000) / 1000;
+      const voltageStr = Array.isArray(acVoltage) ? acVoltage.join('/') : '230V';
+      if (acPhase === '3') {
+        const size = loadKw <= 5 ? '5kW' : loadKw <= 10 ? '10kW' : '15kW';
+        inverterSpec = `3P ${voltageStr} ${size}`;
+      } else {
+        const size = loadKw <= 3 ? '3kW' : loadKw <= 5 ? '5kW' : '6kW';
+        inverterSpec = `1P ${voltageStr} ${size}`;
+      }
+    }
+
+    // Build response - SOLUTION focused, with v2 compatibility fields
+    const avgWind = avgWindSpeed;
+    const worstMonthName = systemReqs.worstMonth.monthName;
+    const bestMonthName = systemReqs.bestMonth.monthName;
+
+    // Frame selection — use data from systemReqs (handles polar frame too)
+    const panelsPerStation = systemReqs.recommendation.panelsPerStation;
+    const kwpPerStation = panelsPerStation * 0.72; // 720W per panel
+    let frameType: string;
+    let foldLevel: string;
+    let frameReason: string;
+
+    if (hideMode) {
+      frameType = 'PVF180';
+      foldLevel = 'Hide — Book Fold 180° flat (camouflage)';
+      frameReason = 'Hide mode — 4 panels fold 180° flat for near-invisible operation';
+    } else if (systemReqs.recommendation.usePolarFrame) {
+      frameType = 'PVF8';
+      foldLevel = 'Polar — 8 panels, extended array';
+      frameReason = `Polar latitude ${Math.abs(coords.lat).toFixed(0)}°, no viable wind — maximized solar collection`;
+    } else if (detectedZone === 'desert') {
+      frameType = 'PVF180';
+      foldLevel = 'Level 3 — Book Fold 180°';
+      frameReason = 'Desert zone — sand abrasion protection';
+    } else if (maxGust5yrKmh > 180) {
+      frameType = 'PVF180';
+      foldLevel = 'Level 3 — Book Fold 180°';
+      frameReason = `5-year max gust ${maxGust5yrKmh.toFixed(0)} km/h > 180 km/h`;
+    } else if (maxGust5yrKmh >= 120) {
+      frameType = 'PVF90';
+      foldLevel = 'Level 2 — Fold 90°';
+      frameReason = `5-year max gust ${maxGust5yrKmh.toFixed(0)} km/h (120-180 km/h range)`;
+    } else {
+      frameType = 'PVFB';
+      foldLevel = 'Level 1 — Feathering';
+      frameReason = `5-year max gust ${maxGust5yrKmh.toFixed(0)} km/h < 120 km/h`;
+    }
+
+    // Calculate confidence score
+    const windYearlyProd = systemReqs.recommendation.windTurbine
+      ? systemReqs.recommendation.windProduction.avg * 365
+      : 0;
+    const totalYearlyProd = systemReqs.yearlyProduction;
+    const windDependency = totalYearlyProd > 0 ? windYearlyProd / totalYearlyProd : 0;
+    const windSourceCount = windData ? (windData.dataSource.match(/,/g)?.length || 0) + 1 : 0;
+
+    const confidence = calculateConfidence(
+      dailySeries.available,
+      windSourceCount,
+      windDependency,
+      systemReqs.worstMonth.coverage,
+      coords.lat,
+      detectedZone
+    );
+
+    return NextResponse.json({
+      status: 'ok',
+      version: '3.0',
+      zone: detectedZone,
+      // subzone removed - only 3 zones: arctic, desert, continental
+      climate: {
+        avg_wind_ms: avgWind,
+        max_wind_ms: maxHourlyWind,
+        max_gust_5yr_kmh: maxGust5yrKmh,
+        gust_5yr_years: gust5yrYears,
+        gust_source: gust5yrData ? 'Open-Meteo Archive' : 'estimated',
+        turbine_height_m: windData?.turbineHeight || 7,
+        wind_data_source: windData?.dataSource || 'PVGIS',
+        wind_sources: {
+          model_raw: windData ? { yearly_ms: +rawModelWind.toFixed(1), source: windData.dataSource, note: 'Median of ERA5, MERRA-2, PVGIS reanalysis' } : null,
+          station_corrected: stationResult ? { yearly_ms: +stationResult.yearlyAvg.toFixed(1), derating: WIND_MODEL_DERATING, note: 'Median of 3 reanalysis sources — no derating applied' } : null,
+          used_for_sizing: +(avgWindSpeed).toFixed(1),
+          recommendation: avgWindSpeed >= 4.0 ? 'VAWT recommended — median wind ≥ 4 m/s' :
+                          avgWindSpeed >= 3.0 ? 'VAWT marginal — on-site anemometer verification needed' :
+                          'VAWT not recommended — insufficient wind resource',
+          warning: 'Wind assessment based on ERA5 (ECMWF), MERRA-2 (NASA), and PVGIS (EU JRC) reanalysis datasets, median-aggregated. Actual site wind conditions may vary due to terrain, elevation, surface roughness, and local obstructions. On-site anemometer measurement is recommended prior to wind turbine installation decisions.',
+        },
+        worst_month: worstMonthName,
+        best_month: bestMonthName,
+        pvgis_source: pvgisData.database
+      },
+      location: {
+        address: coords.display || address || `${coords.lat.toFixed(4)}, ${coords.lon.toFixed(4)}`,
+        lat: pvgisData.location.lat,
+        lon: pvgisData.location.lon,
+        elevation: pvgisData.location.elevation,
+        country: coords.country || 'Unknown',
+        zone: detectedZone
+      },
+      consumption: {
+        daily: dailyKwh,
+        yearly: dailyKwh * 365,
+        hourly: dailyKwh / 24,
+        // v2 compatibility
+        input_watts: consumption || Math.round(dailyKwh / 24 * 1000),
+        daily_kWh: dailyKwh,
+        yearly_kWh: dailyKwh * 365
+      },
+      solarData: {
+        source: 'European Commission JRC PVGIS',
+        tracking: '2-axis',
+        database: pvgisData.database,
+        yearlyPerStation: pvgisData.yearly.E_y,
+        dailyAverage: pvgisData.yearly.E_d
+      },
+      analysis: {
+        worstMonth: systemReqs.worstMonth,
+        bestMonth: systemReqs.bestMonth,
+        deficitMonths: systemReqs.deficitMonths,
+        yearlyBalance: systemReqs.yearlyBalance
+      },
+      // THE SOLUTION - what user actually needs (100% off-grid)
+      solution: {
+        stations: pricing.actualStations,
+        stationModel: detectedZone === 'arctic' ? 'iONE Arctic' :
+                      detectedZone === 'desert' ? 'iONE Desert Shield' : 'iONE Continental',
+        // v2 compatibility fields
+        station_roles: pricing.actualStations === 1 ? ['Master'] : ['Master', 'Slave'],
+        model: detectedZone === 'arctic' ? 'iONE ARCTIC SHIELD' :
+               detectedZone === 'desert' ? 'iONE DESERT SHIELD' : 'iONE CONTINENTAL',
+        panels_per_station: panelsPerStation,
+        kwp_per_station: kwpPerStation,
+        total_kwp: kwpPerStation * pricing.actualStations,
+        frame_type: frameType,
+        frame_reason: frameReason,
+        fold_level: foldLevel,
+        ald_coating: detectedZone === 'desert',
+        ald_reason: detectedZone === 'desert' ? 'Mandatory - sand abrasion protection' : 'Not needed',
+        // Wind turbine (for coastal Arctic with good wind)
+        windTurbine: systemReqs.recommendation.windTurbine,
+        wind_turbine: systemReqs.recommendation.windTurbine,
+        windTurbineCount: systemReqs.recommendation.windTurbineCount,
+        wind_count: systemReqs.recommendation.windTurbineCount || 0,
+        windReason: systemReqs.recommendation.windReason,
+        wind_reason: systemReqs.recommendation.windReason || 'Wind below threshold',
+        windProduction: systemReqs.recommendation.windProduction,
+        // Battery
+        battery: {
+          capacity: pricing.selectedBattery.capacity,
+          capacity_kWh: pricing.selectedBattery.capacity,
+          modules: pricing.selectedBattery.modules,
+          technology: pricing.selectedBattery.type,
+          type: 'LFP',
+          cell: pricing.selectedBattery.type.includes('314') ? '314Ah' : pricing.selectedBattery.type.includes('280') ? '280Ah' : '206Ah',
+          autonomy_days: Math.floor(pricing.selectedBattery.capacity / dailyKwh),
+          reason: systemReqs.recommendation.batteryReason,
+          note: systemReqs.recommendation.batteryReason
+        },
+        // H2-Hub for seasonal storage (Arctic inland)
+        h2Hub: systemReqs.h2Solution ? {
+          enabled: true,
+          hubs: pricing.h2Hubs,
+          reason: 'Seasonal storage (summer → winter)',
+          summerSurplus: systemReqs.h2Solution.summerSurplus,
+          winterDeficit: systemReqs.h2Solution.winterDeficit,
+          h2Available: systemReqs.h2Solution.h2Available
+        } : null,
+        h2_hub: systemReqs.h2Solution ? {
+          enabled: true,
+          h2_needed_kg: Math.round(systemReqs.h2Solution.winterDeficit / 33),
+          tanks: Math.ceil(systemReqs.h2Solution.winterDeficit / 33 / 2),
+          electrolysis_kWh: Math.round(systemReqs.h2Solution.winterDeficit / 0.5),
+          summer_surplus_available_kWh: Math.round(systemReqs.h2Solution.summerSurplus),
+          utilization_pct: 80,
+          base_cost_eur: 25000
+        } : null,
+        thermal: detectedZone === 'arctic' ? ['PTC Heating Film', 'PCM RT10HC'] :
+                 detectedZone === 'desert' ? ['DC Compressor', 'PCM RT28HC', 'AWG Module'] : [],
+        connectivity: detectedZone === 'arctic' ? ['4G LTE', 'Iridium Satellite'] : ['4G LTE'],
+        inverter: inverterSpec,
+        dc_converter: null,
+        warnings: systemReqs.recommendation.warnings
+      },
+      // v2 compatibility: energy object
+      energy: (() => {
+        const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const stationCount = pricing.actualStations;
+        const pps = systemReqs.recommendation.panelsPerStation;
+        const panelScale = pps / 6; // PVGIS data is for 6 panels (4.32 kWp)
+        const monthlyRows = pvgisData.monthly.map((m, i) => {
+          const days = daysInMonth[i];
+          const solarDaily = m.E_d * panelScale * stationCount;
+          const windDaily = (systemReqs.recommendation.windTurbine ? (m.windProduction || 0) : 0) * stationCount;
+          const dailyProd = solarDaily + windDaily;
+          return {
+            month: m.month,
+            monthName: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m.month - 1],
+            solar_kWh: solarDaily * days,
+            wind_kWh: windDaily * days,
+            total_kWh: dailyProd * days,
+            consumption_kWh: dailyKwh * days,
+            balance_kWh: (dailyProd - dailyKwh) * days,
+            avgWind: m.avgWind || 0
+          };
+        });
+        return {
+          monthly: monthlyRows,
+          summer_surplus_kWh: Math.round(systemReqs.h2Solution?.summerSurplus || 0),
+          winter_deficit_kWh: Math.round(systemReqs.h2Solution?.winterDeficit || 0),
+          yearly_balance_kWh: Math.round(monthlyRows.reduce((sum, m) => sum + m.balance_kWh, 0))
+        };
+      })(),
+      // Wind analysis
+      windAnalysis: {
+        avgWind: avgWindSpeed,
+        hasGoodWind: avgWindSpeed >= 4,
+        turbineRecommended: systemReqs.recommendation.windTurbine
+      },
+      // Smart insights
+      insights: {
+        // Coordinates in DMS format
+        coordinatesDMS: {
+          lat: `${Math.abs(pvgisData.location.lat).toFixed(4)}°${pvgisData.location.lat >= 0 ? 'N' : 'S'}`,
+          lon: `${Math.abs(pvgisData.location.lon).toFixed(4)}°${pvgisData.location.lon >= 0 ? 'E' : 'W'}`
+        },
+        // Climate description
+        climate: detectedZone === 'arctic' ? 'Subarctic / Polar' :
+                 detectedZone === 'desert' ? 'Hot Arid / Desert' :
+                 detectedZone === 'tropical' ? 'Tropical / Equatorial' : 'Temperate / Continental',
+        // Solar resource quality
+        solarResource: pvgisData.yearly.E_d > 25 ? 'Excellent' :
+                       pvgisData.yearly.E_d > 20 ? 'Very Good' :
+                       pvgisData.yearly.E_d > 15 ? 'Good' :
+                       pvgisData.yearly.E_d > 10 ? 'Moderate' : 'Low',
+        // Irradiance (kWh/m²/day average)
+        irradiance: (pvgisData.yearly.H_y / 365).toFixed(2),
+        // Seasonal variation (best/worst ratio)
+        seasonalRatio: (systemReqs.bestMonth.dailyProduction / systemReqs.worstMonth.dailyProduction).toFixed(1),
+        // Energy independence (worst month coverage %)
+        worstMonthCoverage: Math.round((systemReqs.worstMonth.dailyProduction * pricing.actualStations / dailyKwh) * 100),
+        // Annual autonomy (months with 100% coverage)
+        autonomyMonths: 12 - systemReqs.deficitMonths,
+        // CO2 savings (kg/year) - assuming 0.4 kg CO2 per kWh replaced
+        co2SavingsKg: Math.round(dailyKwh * 365 * 0.4),
+        // Equivalent trees (1 tree = 20 kg CO2/year)
+        equivalentTrees: Math.round((dailyKwh * 365 * 0.4) / 20),
+        // Energy cost savings (€/year) - assuming 0.25 €/kWh
+        energySavingsEur: Math.round(dailyKwh * 365 * 0.25),
+        // Simple payback (years) - retail price / annual savings
+        paybackYears: (Math.round(pricing.totalEur * 2) / (dailyKwh * 365 * 0.25)).toFixed(1)
+      },
+      pricing: {
+        bomCostUsd: pricing.total,
+        bomCostEur: pricing.totalEur,
+        // v2 compatibility
+        bom_cost_eur: pricing.totalEur,
+        bom_cost_usd: pricing.total,
+        h2_cost_eur: pricing.h2 || 0,
+        non_h2_cost_eur: pricing.totalEur - (pricing.h2 || 0),
+        // Retail: components ×2, H2-Hub ×1.5 (lower margin on expensive module)
+        retail_eur: Math.round((pricing.totalEur - (pricing.h2 || 0)) * 2 + (pricing.h2 || 0) * 1.5),
+        retail_note: '+ VAT',
+        quantity: 1,
+        discount_applied: 0,
+        retailEstimateEur: {
+          // H2 gets 1.3-1.7 range, components get 1.8-2.2 range
+          low: Math.round((pricing.totalEur - (pricing.h2 || 0)) * 1.8 + (pricing.h2 || 0) * 1.3),
+          high: Math.round((pricing.totalEur - (pricing.h2 || 0)) * 2.2 + (pricing.h2 || 0) * 1.7)
+        },
+        breakdown: {
+          base: pricing.base,
+          battery: pricing.battery,
+          wind: pricing.wind,
+          h2: pricing.h2,
+          thermal: pricing.thermal
+        },
+        bom: pricing.bom,
+        note: pricing.margin
+      },
+      monthlyBreakdown: pvgisData.monthly.map(m => {
+        const pScale = systemReqs.recommendation.panelsPerStation / 6;
+        const solarD = m.E_d * pScale * pricing.actualStations;
+        const windD = (systemReqs.recommendation.windTurbine ? (m.windProduction || 0) : 0) * pricing.actualStations;
+        const totalD = solarD + windD;
+        return {
+          month: m.month,
+          monthName: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m.month - 1],
+          solarProduction: solarD,
+          windProduction: windD,
+          avgWindSpeed: m.avgWind,
+          totalProduction: totalD,
+          consumption: dailyKwh,
+          balance: totalD - dailyKwh,
+          status: totalD >= dailyKwh ? 'surplus' : 'deficit'
+        };
+      }),
+      // v3 fields
+      confidence,
+      loadClass: { class: loadClass.class, description: loadClass.description },
+      dailyResolution: dailySeries.available,
+      batteryDerating: systemReqs.recommendation.batteryDerating,
+      // Civil data (only for civil mode)
+      ...(mode === 'civil' ? {
+        civilMaxDailyKwh: systemReqs.civilMaxDailyKwh,
+        civilProfiles: calculateDailyProfiles(
+          dailyKwh,
+          pvgisData.monthly,
+          coords.lat,
+          systemReqs.recommendation.batteryKwh,
+          systemReqs.recommendation.stations,
+          body.heatPump || false,
+          grid,
+          systemReqs.recommendation.panelScaleFromDefault || 1
+        )
+      } : {}),
+      // === v4 Sizing Engine results ===
+      ...(newEngine ? {
+        v4Engine: {
+          selectionMethod: newEngine.selectionMethod,
+          simulationMode: newEngine.simulationMode,
+          reliabilityPolicy: newEngine.reliabilityPolicy.label,
+          candidatesEvaluated: newEngine.candidatesEvaluated,
+          candidatesSimulated: newEngine.candidatesSimulated,
+          candidatesFeasible: newEngine.candidatesFeasible,
+          runtimeMs: newEngine.runtimeMs,
+          zone: newEngine.zone,
+          recommendation: {
+            stations: newEngine.recommendation.config.stations,
+            batteryModules: newEngine.recommendation.config.batteryModules,
+            batteryKwh: +(newEngine.recommendation.config.batteryModules * ENGINE_CONSTANTS.BATTERY_MODULE_KWH).toFixed(2),
+            windTurbines: newEngine.recommendation.config.windTurbines,
+            h2Hubs: newEngine.recommendation.config.h2Hubs,
+            panelsPerStation: newEngine.recommendation.config.panelsPerStation,
+            costUsd: newEngine.recommendation.costUsd,
+            costEur: newEngine.recommendation.costEur,
+          },
+          simulation: {
+            feasible: newEngine.recommendation.result.feasible,
+            lolp: newEngine.recommendation.result.lolp,
+            unmetHours: newEngine.recommendation.result.unmetHours,
+            unmetKwh: +newEngine.recommendation.result.unmetKwh.toFixed(2),
+            minSocKwh: +newEngine.recommendation.result.minSocKwh.toFixed(2),
+            curtailedKwh: +newEngine.recommendation.result.curtailedKwh.toFixed(1),
+            totalSolarKwh: +newEngine.recommendation.result.totalSolarKwh.toFixed(1),
+            totalWindKwh: +newEngine.recommendation.result.totalWindKwh.toFixed(1),
+            equivalentBatteryCycles: +newEngine.recommendation.result.equivalentBatteryCycles.toFixed(0),
+            convergencePassesUsed: newEngine.recommendation.result.convergencePassesUsed,
+          },
+          monthlySummary: newEngine.recommendation.result.monthlySummary,
+          warnings: newEngine.warnings,
+        },
+      } : { v4Engine: null }),
+    });
+
+  } catch (error) {
+    console.error('PVGIS API error:', error);
+    return NextResponse.json({
+      status: 'error',
+      message: 'Internal server error'
+    }, { status: 500 });
+  }
+}
+
+// GET for testing
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const lat = parseFloat(searchParams.get('lat') || '48.143');
+  const lon = parseFloat(searchParams.get('lon') || '11.556');
+  const peakPower = parseFloat(searchParams.get('peakpower') || '4.32');
+
+  const pvgisData = await getPVGISData(lat, lon, peakPower);
+
+  if (!pvgisData) {
+    return NextResponse.json({ status: 'error', message: 'PVGIS request failed' });
+  }
+
+  return NextResponse.json({
+    status: 'ok',
+    source: 'PVGIS JRC',
+    tracking: '2-axis',
+    location: pvgisData.location,
+    database: pvgisData.database,
+    yearly: pvgisData.yearly,
+    monthly: pvgisData.monthly.map(m => ({
+      month: m.month,
+      dailyProduction: m.E_d.toFixed(2),
+      monthlyProduction: m.E_m.toFixed(1),
+      avgTemp: m.avgTemp.toFixed(1)
+    }))
+  });
+}

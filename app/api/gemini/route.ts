@@ -7,68 +7,68 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // === LEVEL 1: WHITELIST ===
 // Known organizations - instant response, no API call
-const WHITELIST: Record<string, { name: string; type: string; focus: string; ceo: string; thesis: string }> = {
+const WHITELIST: Record<string, { name: string; type: string; focus: string }> = {
   // GRANT + DEEP_TECH
-  'eic': { name: 'European Innovation Council', type: 'GRANT', focus: 'DEEP_TECH', ceo: 'Jean-David Malo', thesis: 'Breakthrough innovation funding for deep tech startups' },
-  'eic accelerator': { name: 'EIC Accelerator', type: 'GRANT', focus: 'DEEP_TECH', ceo: 'Jean-David Malo', thesis: 'Grant + equity funding for breakthrough innovations' },
-  'horizon europe': { name: 'Horizon Europe', type: 'GRANT', focus: 'DEEP_TECH', ceo: 'Marc Lemaître', thesis: 'EU research and innovation framework programme' },
-  'horizon 2020': { name: 'Horizon 2020', type: 'GRANT', focus: 'DEEP_TECH', ceo: 'Marc Lemaître', thesis: 'EU research and innovation programme 2014-2020' },
+  'eic': { name: 'European Innovation Council', type: 'GRANT', focus: 'DEEP_TECH' },
+  'eic accelerator': { name: 'EIC Accelerator', type: 'GRANT', focus: 'DEEP_TECH' },
+  'horizon europe': { name: 'Horizon Europe', type: 'GRANT', focus: 'DEEP_TECH' },
+  'horizon 2020': { name: 'Horizon 2020', type: 'GRANT', focus: 'DEEP_TECH' },
 
   // GRANT + CLIMATE
-  'eic climate': { name: 'EIC Climate', type: 'GRANT', focus: 'CLIMATE', ceo: 'Jean-David Malo', thesis: 'Climate tech breakthrough funding' },
-  'innovation fund': { name: 'EU Innovation Fund', type: 'GRANT', focus: 'CLIMATE', ceo: 'Kurt Vandenberghe', thesis: 'Large-scale climate innovation funding' },
+  'eic climate': { name: 'EIC Climate', type: 'GRANT', focus: 'CLIMATE' },
+  'innovation fund': { name: 'EU Innovation Fund', type: 'GRANT', focus: 'CLIMATE' },
 
   // VC + CLIMATE
-  'world fund': { name: 'World Fund', type: 'VC', focus: 'CLIMATE', ceo: 'Daria Saharova', thesis: 'Climate tech VC targeting 100Mt CO₂ reduction potential' },
-  'pale blue dot': { name: 'Pale Blue Dot', type: 'VC', focus: 'CLIMATE', ceo: 'Heidi Lindvall', thesis: 'European climate tech venture capital' },
-  'extantia': { name: 'Extantia', type: 'VC', focus: 'CLIMATE', ceo: 'Michael Stephan', thesis: 'Climate tech VC for carbon removal and reduction' },
+  'world fund': { name: 'World Fund', type: 'VC', focus: 'CLIMATE' },
+  'pale blue dot': { name: 'Pale Blue Dot', type: 'VC', focus: 'CLIMATE' },
+  'extantia': { name: 'Extantia', type: 'VC', focus: 'CLIMATE' },
 
   // VC + DEEP_TECH
-  'htgf': { name: 'High-Tech Gründerfonds', type: 'VC', focus: 'DEEP_TECH', ceo: 'Alex von Frankenberg', thesis: 'German seed VC for technology startups' },
-  'high-tech gründerfonds': { name: 'High-Tech Gründerfonds', type: 'VC', focus: 'DEEP_TECH', ceo: 'Alex von Frankenberg', thesis: 'German seed VC for technology startups' },
-  'sequoia': { name: 'Sequoia Capital', type: 'VC', focus: 'DEEP_TECH', ceo: 'Roelof Botha', thesis: 'Global venture capital for transformative companies' },
-  'sequoia capital': { name: 'Sequoia Capital', type: 'VC', focus: 'DEEP_TECH', ceo: 'Roelof Botha', thesis: 'Global venture capital for transformative companies' },
-  'a16z': { name: 'Andreessen Horowitz', type: 'VC', focus: 'DEEP_TECH', ceo: 'Marc Andreessen', thesis: 'Software eating the world' },
-  'andreessen horowitz': { name: 'Andreessen Horowitz', type: 'VC', focus: 'DEEP_TECH', ceo: 'Marc Andreessen', thesis: 'Software eating the world' },
-  'lakestar': { name: 'Lakestar', type: 'VC', focus: 'DEEP_TECH', ceo: 'Klaus Hommels', thesis: 'European tech venture capital' },
+  'htgf': { name: 'High-Tech Gründerfonds', type: 'VC', focus: 'DEEP_TECH' },
+  'high-tech gründerfonds': { name: 'High-Tech Gründerfonds', type: 'VC', focus: 'DEEP_TECH' },
+  'sequoia': { name: 'Sequoia Capital', type: 'VC', focus: 'DEEP_TECH' },
+  'sequoia capital': { name: 'Sequoia Capital', type: 'VC', focus: 'DEEP_TECH' },
+  'a16z': { name: 'Andreessen Horowitz', type: 'VC', focus: 'DEEP_TECH' },
+  'andreessen horowitz': { name: 'Andreessen Horowitz', type: 'VC', focus: 'DEEP_TECH' },
+  'lakestar': { name: 'Lakestar', type: 'VC', focus: 'DEEP_TECH' },
 
   // VC + DEFENCE
-  'nato innovation fund': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE', ceo: 'Andrea Traversone', thesis: 'Deep tech for defence and security' },
-  'nato if': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE', ceo: 'Andrea Traversone', thesis: 'Deep tech for defence and security' },
-  'decisive point': { name: 'Decisive Point', type: 'VC', focus: 'DEFENCE', ceo: 'John Walters', thesis: 'Critical technologies for defence, energy and infrastructure' },
+  'nato innovation fund': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE' },
+  'nato if': { name: 'NATO Innovation Fund', type: 'VC', focus: 'DEFENCE' },
+  'decisive point': { name: 'Decisive Point', type: 'VC', focus: 'DEFENCE' },
 
   // VC + ENERGY
-  'set ventures': { name: 'SET Ventures', type: 'VC', focus: 'ENERGY', ceo: 'Rene Savelsberg', thesis: 'Energy transition venture capital' },
-  'energy impact partners': { name: 'Energy Impact Partners', type: 'VC', focus: 'ENERGY', ceo: 'Hans Kobler', thesis: 'Energy transition and sustainability' },
+  'set ventures': { name: 'SET Ventures', type: 'VC', focus: 'ENERGY' },
+  'energy impact partners': { name: 'Energy Impact Partners', type: 'VC', focus: 'ENERGY' },
 
   // CVC + ENERGY
-  'equinor ventures': { name: 'Equinor Ventures', type: 'CVC', focus: 'ENERGY', ceo: 'Gareth Burns', thesis: 'Energy transition corporate venture capital' },
-  'shell ventures': { name: 'Shell Ventures', type: 'CVC', focus: 'ENERGY', ceo: 'Geert van de Wouw', thesis: 'Energy and mobility innovation' },
-  'bp ventures': { name: 'BP Ventures', type: 'CVC', focus: 'ENERGY', ceo: 'Meghan Sharp', thesis: 'Energy transition and decarbonization' },
-  'eon ventures': { name: 'E.ON Ventures', type: 'CVC', focus: 'ENERGY', ceo: 'Jan Lozek', thesis: 'Energy innovation and grid solutions' },
-  'e.on ventures': { name: 'E.ON Ventures', type: 'CVC', focus: 'ENERGY', ceo: 'Jan Lozek', thesis: 'Energy innovation and grid solutions' },
+  'equinor ventures': { name: 'Equinor Ventures', type: 'CVC', focus: 'ENERGY' },
+  'shell ventures': { name: 'Shell Ventures', type: 'CVC', focus: 'ENERGY' },
+  'bp ventures': { name: 'BP Ventures', type: 'CVC', focus: 'ENERGY' },
+  'eon ventures': { name: 'E.ON Ventures', type: 'CVC', focus: 'ENERGY' },
+  'e.on ventures': { name: 'E.ON Ventures', type: 'CVC', focus: 'ENERGY' },
 
   // BANK + INDUSTRIAL
-  'kfw': { name: 'KfW', type: 'BANK', focus: 'INDUSTRIAL', ceo: 'Stefan Wintels', thesis: 'German development bank for sustainable growth' },
-  'kreditanstalt für wiederaufbau': { name: 'KfW', type: 'BANK', focus: 'INDUSTRIAL', ceo: 'Stefan Wintels', thesis: 'German development bank for sustainable growth' },
-  'eib': { name: 'European Investment Bank', type: 'BANK', focus: 'INDUSTRIAL', ceo: 'Werner Hoyer', thesis: 'EU long-term lending institution' },
-  'european investment bank': { name: 'European Investment Bank', type: 'BANK', focus: 'INDUSTRIAL', ceo: 'Werner Hoyer', thesis: 'EU long-term lending institution' },
-  'deutsche bank': { name: 'Deutsche Bank', type: 'BANK', focus: 'INDUSTRIAL', ceo: 'Christian Sewing', thesis: 'Global financial services' },
+  'kfw': { name: 'KfW', type: 'BANK', focus: 'INDUSTRIAL' },
+  'kreditanstalt für wiederaufbau': { name: 'KfW', type: 'BANK', focus: 'INDUSTRIAL' },
+  'eib': { name: 'European Investment Bank', type: 'BANK', focus: 'INDUSTRIAL' },
+  'european investment bank': { name: 'European Investment Bank', type: 'BANK', focus: 'INDUSTRIAL' },
+  'deutsche bank': { name: 'Deutsche Bank', type: 'BANK', focus: 'INDUSTRIAL' },
 
   // GOVERNMENT + DEFENCE
-  'bundeswehr': { name: 'Bundeswehr', type: 'GOVERNMENT', focus: 'DEFENCE', ceo: 'Boris Pistorius', thesis: 'German armed forces procurement' },
-  'nato': { name: 'NATO', type: 'GOVERNMENT', focus: 'DEFENCE', ceo: 'Mark Rutte', thesis: 'Alliance defence and security' },
-  'bwi': { name: 'BWI GmbH', type: 'GOVERNMENT', focus: 'DEFENCE', ceo: 'Martin Kaloudis', thesis: 'Bundeswehr IT services' },
+  'bundeswehr': { name: 'Bundeswehr', type: 'GOVERNMENT', focus: 'DEFENCE' },
+  'nato': { name: 'NATO', type: 'GOVERNMENT', focus: 'DEFENCE' },
+  'bwi': { name: 'BWI GmbH', type: 'GOVERNMENT', focus: 'DEFENCE' },
 
   // STRATEGIC + ENERGY
-  'aramco': { name: 'Saudi Aramco', type: 'STRATEGIC', focus: 'ENERGY', ceo: 'Amin H. Nasser', thesis: 'Global energy leader diversifying portfolio' },
-  'saudi aramco': { name: 'Saudi Aramco', type: 'STRATEGIC', focus: 'ENERGY', ceo: 'Amin H. Nasser', thesis: 'Global energy leader diversifying portfolio' },
-  'vattenfall': { name: 'Vattenfall', type: 'STRATEGIC', focus: 'ENERGY', ceo: 'Anna Borg', thesis: 'Fossil-free energy within one generation' },
+  'aramco': { name: 'Saudi Aramco', type: 'STRATEGIC', focus: 'ENERGY' },
+  'saudi aramco': { name: 'Saudi Aramco', type: 'STRATEGIC', focus: 'ENERGY' },
+  'vattenfall': { name: 'Vattenfall', type: 'STRATEGIC', focus: 'ENERGY' },
 
   // STRATEGIC + INFRASTRUCTURE
-  'deutsche telekom': { name: 'Deutsche Telekom', type: 'STRATEGIC', focus: 'INFRASTRUCTURE', ceo: 'Tim Höttges', thesis: 'Telecommunications infrastructure' },
-  'vodafone': { name: 'Vodafone', type: 'STRATEGIC', focus: 'INFRASTRUCTURE', ceo: 'Margherita Della Valle', thesis: 'Connectivity and digital services' },
-  'siemens': { name: 'Siemens', type: 'STRATEGIC', focus: 'INFRASTRUCTURE', ceo: 'Roland Busch', thesis: 'Industrial automation and digitalization' },
+  'deutsche telekom': { name: 'Deutsche Telekom', type: 'STRATEGIC', focus: 'INFRASTRUCTURE' },
+  'vodafone': { name: 'Vodafone', type: 'STRATEGIC', focus: 'INFRASTRUCTURE' },
+  'siemens': { name: 'Siemens', type: 'STRATEGIC', focus: 'INFRASTRUCTURE' },
 };
 
 // === ADJACENCY MATRIX: Valid type×focus combinations ===
@@ -206,7 +206,7 @@ VALID COMBINATIONS:
 If NO (random text, spam, competitor, irrelevant), return confidence: 0.
 
 Return ONLY JSON:
-{"name":"Official name","type":"TYPE","focus":"FOCUS","thesis":"one sentence","ceo":"CEO name or null","confidence":0.0-1.0}`;
+{"name":"Official name","type":"TYPE","focus":"FOCUS","thesis":"one sentence","confidence":0.0-1.0}`;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
@@ -234,7 +234,6 @@ Return ONLY JSON:
       type,
       focus,
       thesis: parsed.thesis || 'Investment organization',
-      ceo: parsed.ceo || null,
       language: `${focus.toLowerCase().replace('_', ' ')}, ${type.toLowerCase().replace('_', ' ')}`,
       status: confidence >= 0.7 ? 'OK' : 'UNCERTAIN',
       confidence,
@@ -257,7 +256,6 @@ Return ONLY JSON:
       type: 'VC',
       focus: 'DEEP_TECH',
       thesis: 'Organization',
-      ceo: null,
       confidence: 0.4,
       message: 'Could not fully verify this organization. Proceed?',
     }, { headers: { 'Cache-Control': 'no-store, no-cache' } });

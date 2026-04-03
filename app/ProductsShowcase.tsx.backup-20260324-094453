@@ -1,0 +1,1887 @@
+'use client';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import SlideNav from './components/SlideNav';
+import TerminalConfigurator from './components/TerminalConfigurator';
+import dynamic from 'next/dynamic';
+
+const MapPicker = dynamic(() => import('./components/MapPicker'), { ssr: false });
+// PrintableQuote removed - using terminal print instead
+import { getComponentById, getZoneExtras, calculateVolumeDiscount } from './data/component-catalog';
+
+interface ProductsShowcaseProps {
+  onComplete: () => void;
+  voiceEnabled: boolean;
+}
+
+type View = 'selection' | 'industrial' | 'civil';
+
+// API v2.0 response format
+interface PVGISResult {
+  status: string;
+  version: string;
+  location: {
+    address: string;
+    lat: number;
+    lon: number;
+    elevation: number;
+    country: string;
+  };
+  zone: string;
+  climate: {
+    avg_wind_ms: number;
+    max_gust_5yr_kmh: number;
+    gust_source: string;
+    wind_data_source: string;
+    worst_month: string;
+    best_month: string;
+    pvgis_source: string;
+  };
+  consumption: {
+    input_watts: number;
+    daily_kWh: number;
+    yearly_kWh: number;
+  };
+  energy: {
+    monthly: Array<{
+      month: number;
+      monthName: string;
+      solar_kWh: number;
+      wind_kWh: number;
+      total_kWh: number;
+      consumption_kWh: number;
+      balance_kWh: number;
+      avgWind: number;
+    }>;
+    summer_surplus_kWh: number;
+    winter_deficit_kWh: number;
+    yearly_balance_kWh: number;
+  };
+  solution: {
+    stations: number;
+    station_roles: string[];
+    model: string;
+    panels_per_station: number;
+    kwp_per_station: number;
+    total_kwp: number;
+    frame_type: string;
+    frame_reason: string;
+    fold_level: string;
+    ald_coating: boolean;
+    ald_reason: string;
+    wind_turbine: boolean;
+    wind_count: number;
+    wind_reason: string;
+    battery: {
+      type: string;
+      cell: string;
+      modules: number;
+      capacity_kWh: number;
+      autonomy_days: number;
+      note: string;
+    };
+    h2_hub: {
+      enabled: boolean;
+      h2_needed_kg: number;
+      tanks: number;
+      electrolysis_kWh: number;
+      summer_surplus_available_kWh: number;
+      utilization_pct: number;
+      base_cost_eur: number;
+    } | null;
+    thermal: string[];
+    connectivity: string[];
+    inverter: string | null;
+    dc_converter: string | null;
+    warnings: string[];
+  };
+  pricing: {
+    bom_cost_eur: number;
+    bom_cost_usd: number;
+    h2_cost_eur: number;
+    non_h2_cost_eur: number;
+    retail_eur: number;
+    markup_explanation: string;
+    financing: {
+      credit: { down_payment_eur: number; monthly_payment_eur: number; term_years: number; annual_rate_pct: number; total_paid_eur: number; cost_per_kwh_eur: number };
+      eaas: { monthly_payment_eur: number; total_paid_eur: number; cost_per_kwh_eur: number; note: string };
+    };
+    quantity: number;
+    discount_applied: number;
+    bom: Array<{ item: string; qty: number; unitPrice: number; total: number; currency: string }>;
+  };
+}
+
+const CLIMATE_ZONES = [
+  {
+    id: 'arctic',
+    name: 'ARCTIC',
+    tagline: 'Extreme Cold Operations',
+    temp: '-50°C to +35°C',
+    color: '#06B6D4',
+    productLine: 'iONE ARCTIC SHIELD',
+    image: '/M33.png',
+  },
+  {
+    id: 'continental',
+    name: 'CONTINENTAL',
+    tagline: 'Standard Industrial Edition',
+    temp: '-35°C to +45°C',
+    color: '#22C55E',
+    productLine: 'iONE CONTINENTAL',
+    image: '/M55.png',
+  },
+  {
+    id: 'desert',
+    name: 'DESERT',
+    tagline: 'Extreme Heat & Dust Protection',
+    temp: '-10°C to +60°C',
+    color: '#F59E0B',
+    productLine: 'iONE DESERT SHIELD',
+    image: '/M44.png',
+  },
+];
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export default function ProductsShowcase({ onComplete }: ProductsShowcaseProps) {
+  const [view, setView] = useState<View>('selection');
+  const [address, setAddress] = useState('');
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [pvgisResult, setPvgisResult] = useState<PVGISResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [locationPreview, setLocationPreview] = useState<{
+    address: string;
+    lat: number;
+    lon: number;
+    elevation: number;
+  } | null>(null);
+
+  // Configurator state
+  const [config, setConfig] = useState({
+    coordinates: '',
+    hourlyConsumption: '',
+    dailyConsumption: '',
+    hoursPerDay: '24',
+    voltageTypes: ['DC'] as string[],
+    voltageLevelDC: '48',
+    voltageLevelsAC: [] as string[],
+    acPhase: '1' as '1' | '3',
+    peakPower: '',
+    components: 'EU' as 'EU' | 'World',
+    quantity: 1,
+    grid: false,
+    heatPump: false,
+    hide: false,
+  });
+
+  // Terminal state
+  const [showTerminal, setShowTerminal] = useState(false);
+
+  // Map state
+  const [showMap, setShowMap] = useState(false);
+
+  // Chart hover state
+  const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
+
+  const selectedZoneData = CLIMATE_ZONES.find(z => z.id === selectedZone);
+
+  const handleAddressSubmit = async (overrideAddress?: string) => {
+    const addr = overrideAddress || address.trim();
+    if (!addr) return;
+
+    setIsSearching(true);
+    try {
+      const response = await fetch('/api/climate-zone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const data = await response.json();
+      if (data.status === 'ok' && data.zone) {
+        setSelectedZone(data.zone);
+        setConfig(prev => ({ ...prev, coordinates: addr }));
+        if (data.location) {
+          setLocationPreview(data.location);
+        }
+      } else {
+        setSelectedZone('continental');
+        setConfig(prev => ({ ...prev, coordinates: addr }));
+      }
+    } catch {
+      setSelectedZone('continental');
+      setConfig(prev => ({ ...prev, coordinates: addr }));
+    }
+    setIsSearching(false);
+  };
+
+  // Calculate using PVGIS API
+  const handleCalculate = () => {
+    if (!config.dailyConsumption && !config.hourlyConsumption) return;
+    if (!config.coordinates) {
+      setError('Please enter installation location');
+      return;
+    }
+
+    setError(null);
+    // Show terminal configurator instead of direct API call
+    setShowTerminal(true);
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleTerminalComplete = (result: any) => {
+    setPvgisResult(result as PVGISResult);
+  };
+
+  const handleCloseTerminal = () => {
+    setShowTerminal(false);
+    if (pvgisResult) {
+      // Keep results visible after closing terminal
+    }
+  };
+
+  // Legacy direct API call (kept for reference)
+  const handleCalculateDirect = async () => {
+    if (!config.dailyConsumption && !config.hourlyConsumption) return;
+    if (!config.coordinates) {
+      setError('Please enter installation location');
+      return;
+    }
+
+    setIsCalculating(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/pvgis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: config.coordinates,
+          dailyConsumption: config.dailyConsumption ? parseFloat(config.dailyConsumption) : undefined,
+          hourlyConsumption: config.hourlyConsumption ? parseFloat(config.hourlyConsumption) : undefined,
+          zone: selectedZone,
+          peakPower: 4.32,
+          loss: 14,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'ok') {
+        setPvgisResult(result);
+      } else {
+        setError(result.message || 'Could not calculate. Check location.');
+      }
+    } catch {
+      setError('Connection error. Try again.');
+    }
+
+    setIsCalculating(false);
+  };
+
+  // Get zone-specific extras
+  const zoneExtras = selectedZone ? getZoneExtras(selectedZone) : [];
+  const extraComponents = zoneExtras.map(id => getComponentById(id)).filter(Boolean);
+
+  // Get components based on EU/World preference
+  const panelId = config.components === 'EU' ? 'PNL-HECKERT-720' : 'PNL-RISEN-720';
+  const mpptId = config.components === 'EU' ? 'MPPT-VERTIV-S48-3000E3' : 'MPPT-YSSC4875BG1';
+  const panel = getComponentById(panelId);
+  const mppt = getComponentById(mpptId);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-white z-50 flex flex-col overflow-hidden"
+    >
+      <div className={`flex-1 overflow-auto ${view === 'selection' ? '' : 'px-4 sm:px-10 py-2 pb-24'}`}>
+        <AnimatePresence mode="wait">
+          {/* SELECTION VIEW */}
+          {view === 'selection' && (
+            <motion.div
+              key="selection"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="h-full flex flex-col"
+            >
+              {/* Header - относительное позиционирование */}
+              <div className="text-center pt-8 sm:pt-12 pb-4 sm:pb-8">
+                <motion.h1
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-3xl sm:text-4xl poster-title-xl text-zinc-900"
+                >
+                  CONFIGURATOR
+                </motion.h1>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="text-zinc-500 text-base poster-body mt-2"
+                >
+                  Select your application
+                </motion.p>
+              </div>
+
+              {/* Main content - CSS Grid для Desktop, Flex для Mobile */}
+              <div className="flex-1 px-4 sm:px-8 pb-24">
+                {/* Desktop: 2 колонки */}
+                <div className="hidden sm:grid grid-cols-2 gap-16 h-full items-start pt-8 max-w-5xl mx-auto">
+
+                  {/* Civil - левая колонка */}
+                  <motion.div
+                    initial={{ opacity: 0, x: -30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="flex justify-center items-start"
+                  >
+                    <button
+                      onClick={() => setView('civil')}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-[28rem] h-[28rem] rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src="/products/D3.png"
+                          alt="Civil"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">CIVIL</span>
+                      <span className="text-zinc-500 text-xs poster-body">Home & Residential</span>
+                    </button>
+                  </motion.div>
+
+                  {/* Industrial - правая колонка */}
+                  <motion.div
+                    initial={{ opacity: 0, x: 30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="flex justify-center items-start"
+                  >
+                    <button
+                      onClick={() => setView('industrial')}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-[28rem] h-[28rem] rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src="/a3.png"
+                          alt="Industrial"
+                          className="w-full h-full object-cover object-[57%_center] scale-[1.35] group-hover:scale-[1.4] transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">INDUSTRIAL</span>
+                      <span className="text-zinc-500 text-xs poster-body">Commercial & Infrastructure</span>
+                    </button>
+                  </motion.div>
+                </div>
+
+                {/* Mobile: вертикальный flex */}
+                <div className="sm:hidden flex flex-col items-center gap-8">
+                  {/* Кнопки в ряд на мобильном */}
+                  <div className="flex gap-6">
+                    <motion.button
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      onClick={() => setView('civil')}
+                      className="flex flex-col items-center"
+                    >
+                      <div className="w-64 h-64 rounded-2xl overflow-hidden shadow-md">
+                        <img src="/products/D3.png" alt="Civil" className="w-full h-full object-cover" />
+                      </div>
+                      <span className="text-lg text-zinc-900 poster-title mt-2">CIVIL</span>
+                      <span className="text-zinc-500 text-[10px] poster-body">Home</span>
+                    </motion.button>
+
+                    <motion.button
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.4 }}
+                      onClick={() => setView('industrial')}
+                      className="flex flex-col items-center"
+                    >
+                      <div className="w-64 h-64 rounded-2xl overflow-hidden shadow-md">
+                        <img src="/a3.png" alt="Industrial" className="w-full h-full object-cover object-[57%_center] scale-[1.35]" />
+                      </div>
+                      <span className="text-lg text-zinc-900 poster-title mt-2">INDUSTRIAL</span>
+                      <span className="text-zinc-500 text-[10px] poster-body">Commercial</span>
+                    </motion.button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+
+          {/* CIVIL VIEW - Configurator */}
+          {view === 'civil' && !selectedZone && (
+            <motion.div
+              key="civil-select"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              <motion.h1
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-4xl sm:text-5xl poster-title-xl text-zinc-900 mb-2"
+              >
+                iONE CIVIL
+              </motion.h1>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2 }}
+                className="text-zinc-500 text-lg mb-8 poster-body"
+              >
+                Home & Residential Energy Independence
+              </motion.p>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4 }}
+                className="max-w-2xl mx-auto w-full"
+              >
+                <label className="block text-zinc-500 text-sm mb-3 text-center poster-body">
+                  Enter your location to configure your station
+                </label>
+                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        setConfig(prev => ({ ...prev, components: 'World', voltageTypes: ['AC'], voltageLevelsAC: ['230V'], acPhase: '1' }));
+                        handleAddressSubmit();
+                      }
+                    }}
+                    placeholder="City, country or postal code..."
+                    className="flex-1 bg-zinc-100 border-2 border-zinc-200 rounded-xl px-4 sm:px-6 py-3 sm:py-4 text-zinc-900 placeholder-zinc-400 focus:border-cyan-500 focus:outline-none transition-colors"
+                  />
+                  <button
+                    onClick={() => {
+                      setConfig(prev => ({ ...prev, components: 'World', voltageTypes: ['AC'], voltageLevelsAC: ['230V'], acPhase: '1' }));
+                      handleAddressSubmit();
+                    }}
+                    disabled={isSearching || !address.trim()}
+                    className="px-6 sm:px-8 py-3 sm:py-4 bg-zinc-900 hover:bg-zinc-800 disabled:bg-zinc-300 disabled:text-zinc-500 text-white font-semibold rounded-xl transition-colors poster-body"
+                  >
+                    {isSearching ? 'Analyzing...' : 'Find'}
+                  </button>
+                  <button
+                    onClick={() => setShowMap(true)}
+                    className="px-6 sm:px-8 py-3 sm:py-4 bg-zinc-700 hover:bg-zinc-600 text-white font-semibold rounded-xl transition-colors poster-body"
+                  >
+                    Map
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+
+          {/* CIVIL VIEW - Configurator after location */}
+          {view === 'civil' && selectedZone && (
+            <motion.div
+              key="civil-config"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 sm:mb-6 gap-2">
+                <div>
+                  <motion.h1
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-2xl sm:text-4xl poster-title-xl text-zinc-900"
+                  >
+                    iONE CIVIL
+                  </motion.h1>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.1 }}
+                    className="text-zinc-500 text-sm sm:text-base poster-body"
+                  >
+                    Home & Residential · Continental
+                  </motion.p>
+                </div>
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  onClick={() => { setSelectedZone(null); setPvgisResult(null); setError(null); setLocationPreview(null); }}
+                  className="text-zinc-500 hover:text-zinc-700 text-sm poster-body flex items-center gap-1 self-start sm:self-auto"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                  Change Location
+                </motion.button>
+              </div>
+
+              <div className={`grid grid-cols-1 ${pvgisResult ? 'lg:grid-cols-[280px_340px_380px] max-w-[1040px]' : 'lg:grid-cols-[280px_400px] max-w-[720px]'} gap-4 sm:gap-6 mx-auto`}>
+
+                {/* COLUMN 1: Image + Location */}
+                <motion.div
+                  initial={{ opacity: 0, x: -30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="space-y-4"
+                >
+                  <div className="w-full max-w-[280px] rounded-2xl overflow-hidden shadow-lg">
+                    <img src="/products/D3.png" alt="Civil" className="w-full h-auto" />
+                  </div>
+
+                  {locationPreview && !pvgisResult && (
+                    <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                      <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Installation Location</div>
+                      <div className="text-sm text-zinc-900 font-medium">{locationPreview.address}</div>
+                      <div className="flex items-center gap-2 mt-2 text-[10px] text-zinc-400">
+                        <span>{locationPreview.lat.toFixed(4)}°N</span>
+                        <span>{locationPreview.lon.toFixed(4)}°E</span>
+                        <span>·</span>
+                        <span>{locationPreview.elevation}m</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {pvgisResult && (
+                    <>
+                      <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Installation Location</div>
+                        <div className="text-sm text-zinc-900 font-medium">{pvgisResult.location.country}</div>
+                        <div className="text-xs text-zinc-500 mt-1">{pvgisResult.location.address}</div>
+                        <div className="flex items-center gap-2 mt-2 text-[10px] text-zinc-400">
+                          <span>{pvgisResult.location.lat.toFixed(4)}°N</span>
+                          <span>{pvgisResult.location.lon.toFixed(4)}°E</span>
+                          <span>·</span>
+                          <span>{pvgisResult.location.elevation}m</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-3">Monthly Production (kWh)</h4>
+                        <div className="text-[9px]">
+                          <div className="grid grid-cols-5 gap-1 text-zinc-400 font-medium border-b border-zinc-100 pb-1 mb-1">
+                            <span></span>
+                            <span className="text-center">☀️</span>
+                            <span className="text-center">💨</span>
+                            <span className="text-center">Total</span>
+                            <span className="text-center">±</span>
+                          </div>
+                          {pvgisResult.energy.monthly.map((m, i) => {
+                            const balColor = m.balance_kWh >= 0 ? 'text-emerald-600' : 'text-red-500';
+                            return (
+                              <div key={i} className="grid grid-cols-5 gap-1 py-0.5 text-zinc-600">
+                                <span className="text-zinc-500 font-medium">{MONTH_NAMES[i]}</span>
+                                <span className="text-center">{Math.round(m.solar_kWh)}</span>
+                                <span className="text-center">{Math.round(m.wind_kWh || 0)}</span>
+                                <span className="text-center">{Math.round(m.solar_kWh + (m.wind_kWh || 0))}</span>
+                                <span className={`text-center font-medium ${balColor}`}>
+                                  {m.balance_kWh >= 0 ? '+' : ''}{Math.round(m.balance_kWh)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+
+                {/* COLUMN 2: Config Form */}
+                <motion.div
+                  initial={{ opacity: 0, y: 30 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="space-y-3"
+                >
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <input
+                      type="text"
+                      value={config.coordinates}
+                      onChange={(e) => setConfig(prev => ({ ...prev, coordinates: e.target.value }))}
+                      placeholder="Installation location..."
+                      className="w-full text-lg text-zinc-900 placeholder-zinc-300 focus:outline-none bg-transparent"
+                    />
+                  </div>
+
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Power</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            value={config.hourlyConsumption}
+                            onChange={(e) => {
+                              const powerW = e.target.value;
+                              const hours = parseFloat(config.hoursPerDay) || 24;
+                              const daily = powerW ? (parseFloat(powerW) / 1000 * hours).toFixed(1) : '';
+                              setConfig(prev => ({ ...prev, hourlyConsumption: powerW, dailyConsumption: daily }));
+                            }}
+                            placeholder="200"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">W</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Hours</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            min="1"
+                            max="24"
+                            value={config.hoursPerDay}
+                            onChange={(e) => {
+                              const hours = e.target.value;
+                              const h = parseFloat(hours) || 24;
+                              const powerW = config.hourlyConsumption;
+                              const daily = powerW ? (parseFloat(powerW) / 1000 * h).toFixed(1) : '';
+                              setConfig(prev => ({ ...prev, hoursPerDay: hours, dailyConsumption: daily }));
+                            }}
+                            placeholder="24"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">h/d</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Daily</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            value={config.dailyConsumption}
+                            onChange={(e) => {
+                              const daily = e.target.value;
+                              const hours = parseFloat(config.hoursPerDay) || 24;
+                              const powerW = daily ? Math.round(parseFloat(daily) / hours * 1000).toString() : '';
+                              setConfig(prev => ({ ...prev, dailyConsumption: daily, hourlyConsumption: powerW }));
+                            }}
+                            placeholder="4.8"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">kWh</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* AC only - panels selection */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-3 py-1.5 rounded-full border border-zinc-900 text-zinc-900 bg-zinc-900/5 text-xs font-medium tracking-wide">AC</span>
+                    <span className="text-zinc-300 text-xs">·</span>
+                    {(['1', '3'] as const).map((ph) => (
+                      <button
+                        key={ph}
+                        onClick={() => setConfig(prev => ({
+                          ...prev,
+                          acPhase: ph,
+                          voltageLevelsAC: ph === '3' ? ['400V'] : ['230V'],
+                        }))}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                          config.acPhase === ph ? 'text-zinc-900' : 'text-zinc-400 hover:text-zinc-600'
+                        }`}
+                      >
+                        {ph}P
+                      </button>
+                    ))}
+                    <span className="text-zinc-300 text-xs">·</span>
+                    <span className="text-xs text-zinc-500">{config.acPhase === '3' ? '400V' : '230V'}</span>
+                    <span className="text-zinc-300 text-xs">·</span>
+                    <button
+                      onClick={() => setConfig(prev => ({ ...prev, grid: !prev.grid }))}
+                      className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                        config.grid
+                          ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                          : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                      }`}
+                    >
+                      Grid
+                    </button>
+                    <button
+                      onClick={() => setConfig(prev => ({ ...prev, heatPump: !prev.heatPump }))}
+                      className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                        config.heatPump
+                          ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                          : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                      }`}
+                    >
+                      Heat Pump
+                    </button>
+                  </div>
+
+                  {error && (
+                    <div className="text-red-500 text-xs px-1">{error}</div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-2">
+                    <p className="text-zinc-400 text-xs">
+                      PVGIS + Open-Meteo · World components
+                    </p>
+                    <button
+                      onClick={handleCalculate}
+                      disabled={isCalculating || (!config.dailyConsumption && !config.hourlyConsumption)}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 text-zinc-500 text-sm font-medium tracking-wide transition-all duration-200 hover:text-zinc-800 hover:border-zinc-400 hover:bg-zinc-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <span>{isCalculating ? 'Calculating...' : 'Calculate'}</span>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {pvgisResult && (
+                    <>
+                      <div className="bg-white rounded-xl p-4 shadow-sm">
+                        <div className="flex items-baseline gap-2 mb-3">
+                          <span className="text-2xl font-light text-zinc-900">
+                            {pvgisResult.solution.stations}×
+                          </span>
+                          <span className="text-base text-zinc-600">
+                            {pvgisResult.solution.model}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3 text-xs">
+                          <div>
+                            <div className="text-zinc-400">Panels</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.panels_per_station * pvgisResult.solution.stations}× 720W</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-400">Array</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.total_kwp.toFixed(1)} kWp</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-400">Battery</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.battery.capacity_kWh.toFixed(1)} kWh</div>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+
+                {/* COLUMN 3: BOM (after calculation) */}
+                {pvgisResult && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="space-y-4"
+                  >
+                    <div className="bg-white rounded-xl p-4 shadow-sm">
+                      <h4 className="text-sm font-semibold text-zinc-700 mb-3">Bill of Materials</h4>
+                      <div className="space-y-1 text-[10px]">
+                        {pvgisResult.pricing.bom.filter(item => item.total >= 0).map((item, i) => (
+                          <div key={i} className="flex justify-between">
+                            <span className="text-zinc-600">{item.qty}× {item.item}</span>
+                            <span className="text-zinc-900 font-medium">€{item.total.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="border-t border-zinc-200 mt-3 pt-3 flex justify-between text-sm font-semibold">
+                        <span className="text-zinc-700">Retail</span>
+                        <span className="text-zinc-900">€{pvgisResult.pricing.retail_eur.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className="text-zinc-400">per kWh</span>
+                        <span className="text-zinc-500">€{Math.round(pvgisResult.pricing.retail_eur / pvgisResult.solution.battery.capacity_kWh).toLocaleString()}/kWh</span>
+                      </div>
+                      {pvgisResult.pricing.financing && (
+                        <div className="border-t border-zinc-200 mt-3 pt-3 space-y-2">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-500">Credit (30% down + 10yr/10%)</span>
+                            <span className="text-zinc-700 font-medium">€{pvgisResult.pricing.financing.credit.monthly_payment_eur}/mo</span>
+                          </div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-500">EaaS subscription</span>
+                            <span className="text-zinc-700 font-medium">€{pvgisResult.pricing.financing.eaas.monthly_payment_eur}/mo</span>
+                          </div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-400">Energy cost (credit)</span>
+                            <span className="text-zinc-500">€{pvgisResult.pricing.financing.credit.cost_per_kwh_eur}/kWh</span>
+                          </div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-400">Energy cost (EaaS)</span>
+                            <span className="text-zinc-500">€{pvgisResult.pricing.financing.eaas.cost_per_kwh_eur}/kWh</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Grid / Self-sufficiency stats */}
+                    {(pvgisResult as any).civilProfiles && (
+                      <div className="bg-white rounded-xl p-4 shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-3">Energy Balance</h4>
+                        {(() => {
+                          const profiles = (pvgisResult as any).civilProfiles as any[];
+                          const yearGrid = profiles.reduce((s: number, p: any) => s + p.fromGrid_kWh, 0);
+                          const yearConsumed = profiles.reduce((s: number, p: any) => s + p.consumed_kWh, 0);
+                          const yearSolar = profiles.reduce((s: number, p: any) => s + p.solarGenerated_kWh, 0);
+                          const yearCurtailed = profiles.reduce((s: number, p: any) => s + p.curtailed_kWh, 0);
+                          const selfPct = yearConsumed > 0 ? Math.round((1 - yearGrid / yearConsumed) * 100) : 100;
+                          return (
+                            <div className="space-y-2 text-xs">
+                              <div className="flex justify-between">
+                                <span className="text-zinc-500">Solar generated</span>
+                                <span className="text-zinc-700 font-medium">{Math.round(yearSolar).toLocaleString()} kWh/yr</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-zinc-500">Consumed</span>
+                                <span className="text-zinc-700 font-medium">{Math.round(yearConsumed).toLocaleString()} kWh/yr</span>
+                              </div>
+                              {yearGrid > 0 && (
+                                <div className="flex justify-between">
+                                  <span className="text-zinc-500">From grid</span>
+                                  <span className="text-amber-600 font-medium">{Math.round(yearGrid).toLocaleString()} kWh/yr</span>
+                                </div>
+                              )}
+                              {yearCurtailed > 0 && (
+                                <div className="flex justify-between">
+                                  <span className="text-zinc-500">Curtailed</span>
+                                  <span className="text-zinc-400">{Math.round(yearCurtailed).toLocaleString()} kWh/yr</span>
+                                </div>
+                              )}
+                              <div className="flex justify-between pt-2 border-t border-zinc-100">
+                                <span className="text-zinc-700 font-semibold">Self-sufficiency</span>
+                                <span className={`font-bold ${selfPct >= 90 ? 'text-emerald-600' : selfPct >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
+                                  {selfPct}%
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* Station capacity info */}
+                    {pvgisResult && (pvgisResult as any).civilMaxDailyKwh && (
+                      <div className="bg-zinc-50 rounded-xl p-4 shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-2">Station Capacity</h4>
+                        <div className="text-xs text-zinc-600 space-y-2">
+                          <div className="flex justify-between">
+                            <span>1 station covers up to</span>
+                            <span className="text-zinc-900 font-bold">{(pvgisResult as any).civilMaxDailyKwh} kWh/day</span>
+                          </div>
+                          {pvgisResult.solution.stations > 1 && (
+                            <div className="text-[10px] text-zinc-500 pt-1 border-t border-zinc-200">
+                              Your consumption ({pvgisResult.consumption.daily_kWh} kWh/day) exceeds 1-station capacity. Second station added.
+                            </div>
+                          )}
+                          {pvgisResult.solution.stations === 1 && (
+                            <div className="text-[10px] text-emerald-600 pt-1 border-t border-zinc-200">
+                              1 station is sufficient for your location and consumption.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* INDUSTRIAL VIEW - Zone Selection */}
+          {view === 'industrial' && !selectedZone && (
+            <motion.div
+              key="industrial-select"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              <motion.h1
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-4xl sm:text-5xl poster-title-xl text-zinc-900 mb-2"
+              >
+                iONE INDUSTRIAL
+              </motion.h1>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2 }}
+                className="text-zinc-500 text-lg mb-8 poster-body"
+              >
+                Three climate zones. One platform.
+              </motion.p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-12 mb-10 max-w-4xl mx-auto">
+                {CLIMATE_ZONES.map((zone, i) => (
+                  <motion.div
+                    key={zone.id}
+                    initial={{ opacity: 0, y: 30 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 + i * 0.1 }}
+                    className="flex justify-center"
+                  >
+                    <button
+                      onClick={() => setSelectedZone(zone.id)}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-44 h-44 sm:w-56 sm:h-56 rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src={zone.image}
+                          alt={zone.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">{zone.name}</span>
+                      <span className="text-zinc-500 text-xs poster-body">{zone.tagline}</span>
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.6 }}
+                className="max-w-2xl mx-auto w-full"
+              >
+                <label className="block text-zinc-500 text-sm mb-3 text-center poster-body">
+                  Or enter your location to find the right station
+                </label>
+                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddressSubmit()}
+                    placeholder="City, country or postal code..."
+                    className="flex-1 bg-zinc-100 border-2 border-zinc-200 rounded-xl px-4 sm:px-6 py-3 sm:py-4 text-zinc-900 placeholder-zinc-400 focus:border-cyan-500 focus:outline-none transition-colors"
+                  />
+                  <button
+                    onClick={() => handleAddressSubmit()}
+                    disabled={isSearching || !address.trim()}
+                    className="px-6 sm:px-8 py-3 sm:py-4 bg-zinc-900 hover:bg-zinc-800 disabled:bg-zinc-300 disabled:text-zinc-500 text-white font-semibold rounded-xl transition-colors poster-body"
+                  >
+                    {isSearching ? 'Analyzing...' : 'Find'}
+                  </button>
+                  <button
+                    onClick={() => setShowMap(true)}
+                    className="px-6 sm:px-8 py-3 sm:py-4 bg-zinc-700 hover:bg-zinc-600 text-white font-semibold rounded-xl transition-colors poster-body"
+                  >
+                    Map
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+
+          {/* INDUSTRIAL VIEW - Configurator */}
+          {view === 'industrial' && selectedZone && selectedZoneData && (
+            <motion.div
+              key="industrial-config"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              {/* No header - Change Zone is in Column 2 location field */}
+
+              {/* Main Grid - 2 columns before result, 3 columns after */}
+              {/* Fixed widths, centered on large screens */}
+              <div className={`grid grid-cols-1 ${pvgisResult ? 'lg:grid-cols-[280px_340px_380px] max-w-[1040px]' : 'lg:grid-cols-[280px_400px] max-w-[720px]'} gap-4 sm:gap-6 mx-auto`}>
+
+                {/* COLUMN 1: Station Title + Image + Location + Climate Table */}
+                <motion.div
+                  initial={{ opacity: 0, x: -30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="space-y-4"
+                >
+                  {/* Station Name + Tagline */}
+                  <div>
+                    <motion.h1
+                      initial={{ opacity: 0, y: -20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-lg sm:text-xl poster-title-xl leading-tight"
+                      style={{ color: selectedZoneData.color }}
+                    >
+                      {selectedZoneData.productLine}
+                    </motion.h1>
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.1 }}
+                      className="text-zinc-500 text-xs poster-body mt-0.5"
+                    >
+                      {selectedZoneData.tagline} · {selectedZoneData.temp}
+                    </motion.p>
+                  </div>
+
+                  {/* Station Image */}
+                  <div className="w-full max-w-[280px] rounded-2xl overflow-hidden shadow-lg">
+                    <img
+                      src={selectedZoneData.image}
+                      alt={selectedZoneData.name}
+                      className="w-full h-auto"
+                    />
+                  </div>
+
+                  {/* Before calculation: Zone Equipment */}
+                  {!pvgisResult && (
+                    <div className="bg-zinc-100 rounded-xl p-4 max-w-[280px]">
+                      <h4 className="text-sm font-semibold text-zinc-700 mb-2">Zone Equipment</h4>
+                      <div className="space-y-1 text-xs">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-600">{panel?.model.split(' ')[0]} 720W</span>
+                          <span className="text-zinc-400">{panel?.origin.toUpperCase()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-600">{mppt?.model}</span>
+                          <span className="text-zinc-400">{mppt?.origin.toUpperCase()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-600">2-axis Tracking ±0.1°</span>
+                          <span className="text-zinc-400">EU</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-600">SMU48B Controller</span>
+                          <span className="text-zinc-400">WORLD</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-600">Sensor Package</span>
+                          <span className="text-zinc-400">WORLD</span>
+                        </div>
+                        {extraComponents.map((comp) => (
+                          <div key={comp?.id} className="flex justify-between">
+                            <span className="text-zinc-600">{comp?.model.split(' ').slice(0, 2).join(' ')}</span>
+                            <span className="text-zinc-400">{comp?.origin.toUpperCase()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* After calculation: Location + Climate Data */}
+                  {pvgisResult && (
+                    <>
+                      {/* Location Card */}
+                      <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Installation Location</div>
+                        <div className="text-sm text-zinc-900 font-medium">{pvgisResult.location.country}</div>
+                        <div className="text-xs text-zinc-500 mt-1">{pvgisResult.location.address}</div>
+                        <div className="flex items-center gap-2 mt-2 text-[10px] text-zinc-400">
+                          <span>{pvgisResult.location.lat.toFixed(4)}°N</span>
+                          <span>{pvgisResult.location.lon.toFixed(4)}°E</span>
+                          <span>·</span>
+                          <span>{pvgisResult.location.elevation}m</span>
+                        </div>
+                      </div>
+
+                      {/* Climate Summary */}
+                      <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-3">Climate Analysis</h4>
+                        <div className="space-y-2 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Avg Wind</span>
+                            <span className="text-zinc-700 font-medium">{pvgisResult.climate.avg_wind_ms.toFixed(1)} m/s</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Max Gust (5yr)</span>
+                            <span className="text-zinc-700 font-medium">{pvgisResult.climate.max_gust_5yr_kmh ? (pvgisResult.climate.max_gust_5yr_kmh / 3.6).toFixed(0) : 'N/A'} m/s</span>
+                          </div>
+                          <div className="flex justify-between pt-2 border-t border-zinc-100">
+                            <span className="text-zinc-500">Frame</span>
+                            <span className="text-zinc-900 font-semibold">{pvgisResult.solution.frame_type}</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400">{pvgisResult.solution.frame_reason}</div>
+                        </div>
+                      </div>
+
+                      {/* Monthly Climate Table */}
+                      <div className="bg-white rounded-xl p-4 max-w-[280px] shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-3">Monthly Production (kWh)</h4>
+                        <div className="text-[9px]">
+                          <div className="grid grid-cols-5 gap-1 text-zinc-400 font-medium border-b border-zinc-100 pb-1 mb-1">
+                            <span></span>
+                            <span className="text-center">☀️</span>
+                            <span className="text-center">💨</span>
+                            <span className="text-center">Total</span>
+                            <span className="text-center">±</span>
+                          </div>
+                          {(() => {
+                            // Simulate SOC to determine if deficit months are battery-buffered
+                            const batKwh = pvgisResult.solution.battery.capacity_kWh;
+                            const monthly = pvgisResult.energy.monthly;
+                            // Find best start (month with highest surplus before deficit)
+                            const socAfter: number[] = [];
+                            let soc = batKwh;
+                            // Start from first surplus month after summer
+                            const startIdx = monthly.findIndex((m, i) => i >= 6 && m.balance_kWh > 0) || 0;
+                            for (let j = 0; j < 12; j++) {
+                              const idx = (startIdx + j) % 12;
+                              soc = Math.min(batKwh, Math.max(0, soc + monthly[idx].balance_kWh));
+                              socAfter[idx] = soc;
+                            }
+
+                            return monthly.map((m, i) => {
+                              const isDeficit = m.balance_kWh < 0;
+                              const isBuffered = isDeficit && socAfter[i] > 0;
+                              const rowColor = isDeficit
+                                ? (isBuffered ? 'text-amber-600' : 'text-red-600')
+                                : 'text-zinc-600';
+                              const balColor = m.balance_kWh >= 0
+                                ? 'text-emerald-600'
+                                : (isBuffered ? 'text-amber-500' : 'text-red-500');
+
+                              return (
+                                <div key={i} className={`grid grid-cols-5 gap-1 py-0.5 ${rowColor}`}>
+                                  <span className="text-zinc-500 font-medium">{MONTH_NAMES[i]}</span>
+                                  <span className="text-center">{Math.round(m.solar_kWh)}</span>
+                                  <span className="text-center">{Math.round(m.wind_kWh || 0)}</span>
+                                  <span className="text-center">{Math.round(m.solar_kWh + (m.wind_kWh || 0))}</span>
+                                  <span className={`text-center font-medium ${balColor}`}>
+                                    {m.balance_kWh >= 0 ? '+' : ''}{Math.round(m.balance_kWh)}
+                                  </span>
+                                </div>
+                              );
+                            });
+                          })()}
+                          {/* Yearly total */}
+                          <div className="grid grid-cols-5 gap-1 py-1 mt-1 border-t border-zinc-200 font-medium">
+                            <span className="text-zinc-700">Year</span>
+                            <span className="text-center text-zinc-700">
+                              {Math.round(pvgisResult.energy.monthly.reduce((sum, m) => sum + m.solar_kWh, 0))}
+                            </span>
+                            <span className="text-center text-zinc-700">
+                              {Math.round(pvgisResult.energy.monthly.reduce((sum, m) => sum + (m.wind_kWh || 0), 0))}
+                            </span>
+                            <span className="text-center text-zinc-700">
+                              {Math.round(pvgisResult.energy.monthly.reduce((sum, m) => sum + m.solar_kWh + (m.wind_kWh || 0), 0))}
+                            </span>
+                            <span className={`text-center ${pvgisResult.energy.yearly_balance_kWh >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                              {pvgisResult.energy.yearly_balance_kWh >= 0 ? '+' : ''}{Math.round(pvgisResult.energy.yearly_balance_kWh)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Coverage note — only if deficit months exist */}
+                      {pvgisResult.energy.monthly.some(m => m.balance_kWh < 0) && (
+                        <div className="bg-zinc-50 rounded-lg p-3 max-w-[280px]">
+                          <div className="text-[10px] font-medium mb-1 text-zinc-700">Coverage</div>
+                          <div className="text-[9px] text-zinc-600 space-y-0.5">
+                            {pvgisResult.solution.h2_hub?.enabled ? (
+                              <div>H2-Hub bridges seasonal deficit. Summer surplus → hydrogen → winter fuel cell.</div>
+                            ) : (
+                              <div>Battery + summer surplus cover deficit months. Yearly balance positive.</div>
+                            )}
+                            {pvgisResult.solution.warnings?.map((w: string, i: number) => (
+                              <div key={i} className="text-amber-600 mt-1">{w}</div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Data Sources */}
+                      <div className="bg-zinc-50 rounded-lg p-3 max-w-[280px]">
+                        <div className="text-[10px] text-zinc-500 font-medium mb-1">Data Sources</div>
+                        <div className="text-[9px] text-zinc-400 space-y-0.5">
+                          <div>☀️ {pvgisResult.climate.pvgis_source}</div>
+                          <div>💨 {pvgisResult.climate.wind_data_source === 'NASA' ? 'NASA POWER' : 'PVGIS TMY'}</div>
+                          <div>🌪️ {pvgisResult.climate.gust_source || 'Open-Meteo Archive'}</div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+
+                {/* COLUMN 2: Configuration Form + Station Details (after calc) */}
+                <motion.div
+                  initial={{ opacity: 0, y: 30 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="space-y-3"
+                >
+                  {/* Location + Change Zone */}
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={config.coordinates}
+                        onChange={(e) => setConfig(prev => ({ ...prev, coordinates: e.target.value }))}
+                        placeholder="Installation location..."
+                        className="flex-1 text-lg text-zinc-900 placeholder-zinc-300 focus:outline-none bg-transparent"
+                      />
+                      <button
+                        onClick={() => { setSelectedZone(null); setPvgisResult(null); setError(null); setLocationPreview(null); }}
+                        className="text-zinc-400 hover:text-zinc-600 text-xs flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Change Zone
+                      </button>
+                    </div>
+                    {/* Location Preview - only before calculation */}
+                    {locationPreview && !pvgisResult && (
+                      <div className="mt-3 pt-3 border-t border-zinc-100">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Installation Location</div>
+                        <div className="text-sm text-zinc-700 leading-relaxed">{locationPreview.address}</div>
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-zinc-500">
+                          <span>{locationPreview.lat.toFixed(4)}°N, {locationPreview.lon.toFixed(4)}°E</span>
+                          <span className="text-zinc-300">·</span>
+                          <span>Elevation: {locationPreview.elevation}m</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Energy card */}
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <div className="grid grid-cols-4 gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Power</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            value={config.hourlyConsumption}
+                            onChange={(e) => {
+                              const powerW = e.target.value;
+                              const hours = parseFloat(config.hoursPerDay) || 24;
+                              const daily = powerW ? (parseFloat(powerW) / 1000 * hours).toFixed(1) : '';
+                              setConfig(prev => ({ ...prev, hourlyConsumption: powerW, dailyConsumption: daily }));
+                            }}
+                            placeholder="200"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">W</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Hours</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            min="1"
+                            max="24"
+                            value={config.hoursPerDay}
+                            onChange={(e) => {
+                              const hours = e.target.value;
+                              const h = parseFloat(hours) || 24;
+                              const powerW = config.hourlyConsumption;
+                              const daily = powerW ? (parseFloat(powerW) / 1000 * h).toFixed(1) : '';
+                              setConfig(prev => ({ ...prev, hoursPerDay: hours, dailyConsumption: daily }));
+                            }}
+                            placeholder="24"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">h/d</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Daily</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            value={config.dailyConsumption}
+                            onChange={(e) => {
+                              const daily = e.target.value;
+                              const hours = parseFloat(config.hoursPerDay) || 24;
+                              const powerW = daily ? Math.round(parseFloat(daily) / hours * 1000).toString() : '';
+                              setConfig(prev => ({ ...prev, dailyConsumption: daily, hourlyConsumption: powerW }));
+                            }}
+                            placeholder="4.8"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">kWh</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Peak</div>
+                        <div className="flex items-baseline gap-0.5">
+                          <input
+                            type="number"
+                            value={config.peakPower}
+                            onChange={(e) => setConfig(prev => ({ ...prev, peakPower: e.target.value }))}
+                            placeholder="—"
+                            className="w-full text-lg font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent min-w-0"
+                          />
+                          <span className="text-[10px] text-zinc-400 shrink-0">kW</span>
+                        </div>
+                      </div>
+                    </div>
+                    {config.peakPower && parseFloat(config.peakPower) > 5 && (
+                      <p className="text-amber-600 text-[10px] mt-2">High peak load → LTO battery</p>
+                    )}
+                  </div>
+
+                  {/* Output options - site style */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {['DC', 'AC'].map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setConfig(prev => ({
+                          ...prev,
+                          voltageTypes: prev.voltageTypes.includes(type)
+                            ? prev.voltageTypes.filter(t => t !== type)
+                            : [...prev.voltageTypes, type]
+                        }))}
+                        className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                          config.voltageTypes.includes(type)
+                            ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                            : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                    {config.voltageTypes.includes('DC') && (
+                      <>
+                        <span className="text-zinc-300 text-xs">·</span>
+                        {['12', '24', '48'].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => setConfig(prev => ({ ...prev, voltageLevelDC: v }))}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                              config.voltageLevelDC === v
+                                ? 'text-zinc-900'
+                                : 'text-zinc-400 hover:text-zinc-600'
+                            }`}
+                          >
+                            {v}V
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {config.voltageTypes.includes('AC') && (
+                      <>
+                        <span className="text-zinc-300 text-xs">·</span>
+                        {(['1', '3'] as const).map((ph) => (
+                          <button
+                            key={ph}
+                            onClick={() => setConfig(prev => ({ ...prev, acPhase: ph }))}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                              config.acPhase === ph
+                                ? 'text-zinc-900'
+                                : 'text-zinc-400 hover:text-zinc-600'
+                            }`}
+                          >
+                            {ph}P
+                          </button>
+                        ))}
+                        <span className="text-zinc-300 text-xs">·</span>
+                        {['110', '230', '400'].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => setConfig(prev => ({
+                              ...prev,
+                              voltageLevelsAC: prev.voltageLevelsAC.includes(v + 'V')
+                                ? prev.voltageLevelsAC.filter(x => x !== v + 'V')
+                                : [...prev.voltageLevelsAC, v + 'V']
+                            }))}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                              config.voltageLevelsAC.includes(v + 'V')
+                                ? 'text-zinc-900'
+                                : 'text-zinc-400 hover:text-zinc-600'
+                            }`}
+                          >
+                            {v}~
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    <span className="text-zinc-300 text-xs">·</span>
+                    {(['EU', 'World'] as const).map((origin) => (
+                      <button
+                        key={origin}
+                        onClick={() => setConfig(prev => ({ ...prev, components: origin }))}
+                        className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                          config.components === origin
+                            ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                            : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                        }`}
+                      >
+                        {origin}
+                      </button>
+                    ))}
+                    <span className="text-zinc-300 text-xs">·</span>
+                    <button
+                      onClick={() => setConfig(prev => ({ ...prev, hide: !prev.hide }))}
+                      className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                        config.hide
+                          ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                          : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                      }`}
+                    >
+                      Hide
+                    </button>
+                  </div>
+
+                  {/* Error */}
+                  {error && (
+                    <div className="text-red-500 text-xs px-1">{error}</div>
+                  )}
+
+                  {/* Calculate - site style */}
+                  <div className="flex items-center justify-between pt-2">
+                    <p className="text-zinc-400 text-xs">
+                      PVGIS + Open-Meteo · 2-axis
+                    </p>
+                    <button
+                      onClick={handleCalculate}
+                      disabled={isCalculating || (!config.dailyConsumption && !config.hourlyConsumption)}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 text-zinc-500 text-sm font-medium tracking-wide transition-all duration-200 hover:text-zinc-800 hover:border-zinc-400 hover:bg-zinc-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <span>{isCalculating ? 'Calculating...' : 'Calculate'}</span>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* After calculation: Station Composition + Energy Chart */}
+                  {pvgisResult && (
+                    <>
+                      {/* Station Composition */}
+                      <div className="bg-white rounded-xl p-4 shadow-sm">
+                        <div className="flex items-baseline gap-2 mb-3">
+                          <span className="text-2xl font-light text-zinc-900">
+                            {pvgisResult.solution.stations}×
+                          </span>
+                          <span className="text-base text-zinc-600">
+                            {pvgisResult.solution.model}
+                          </span>
+                        </div>
+
+                        {/* Station roles */}
+                        <div className="flex gap-2 mb-3">
+                          {pvgisResult.solution.station_roles.map((role, i) => (
+                            <span
+                              key={i}
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                role === 'Master'
+                                  ? 'bg-zinc-900 text-white'
+                                  : 'bg-zinc-200 text-zinc-600'
+                              }`}
+                            >
+                              {role}
+                            </span>
+                          ))}
+                        </div>
+
+                        {/* Key specs */}
+                        <div className="grid grid-cols-3 gap-3 text-xs">
+                          <div>
+                            <div className="text-zinc-400">Panels</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.panels_per_station * pvgisResult.solution.stations}× 720W</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-400">Array</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.total_kwp.toFixed(1)} kWp</div>
+                          </div>
+                          <div>
+                            <div className="text-zinc-400">Battery</div>
+                            <div className="text-zinc-900 font-medium">{pvgisResult.solution.battery.capacity_kWh.toFixed(1)} kWh</div>
+                          </div>
+                        </div>
+
+                        {/* Additional components */}
+                        <div className="mt-3 pt-3 border-t border-zinc-100 text-xs text-zinc-500 space-y-1">
+                          <div>{pvgisResult.solution.battery.modules}× {pvgisResult.solution.battery.cell} {pvgisResult.solution.battery.type}</div>
+                          {pvgisResult.solution.wind_turbine && (
+                            <div className="text-cyan-600">{pvgisResult.solution.wind_count}× VAWT 500W · {pvgisResult.solution.wind_reason}</div>
+                          )}
+                          {pvgisResult.solution.h2_hub?.enabled && (
+                            <div className="text-emerald-600">{pvgisResult.solution.h2_hub.tanks}× H2-HUB · Seasonal storage</div>
+                          )}
+                          {pvgisResult.solution.ald_coating && (
+                            <div className="text-amber-600">Al₂O₃ ALD Coating · {pvgisResult.solution.ald_reason}</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Energy Balance Chart */}
+                      <div className="bg-white rounded-xl p-4 shadow-sm">
+                        <h4 className="text-sm font-semibold text-zinc-700 mb-3">Energy Balance</h4>
+
+                        {/* Butterfly chart with hover tooltip */}
+                        <div className="mb-3 relative" onMouseLeave={() => setHoveredMonth(null)}>
+                          {/* Tooltip */}
+                          {hoveredMonth !== null && pvgisResult.energy.monthly[hoveredMonth] && (
+                            <div
+                              className="absolute z-10 bg-zinc-900 text-white text-[10px] rounded-lg px-3 py-2 shadow-lg pointer-events-none"
+                              style={{
+                                left: `${(hoveredMonth + 0.5) * (100/12)}%`,
+                                top: '-8px',
+                                transform: 'translateX(-50%) translateY(-100%)'
+                              }}
+                            >
+                              <div className="font-semibold mb-1">{MONTH_NAMES[hoveredMonth]}</div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-amber-400">☀️</span>
+                                <span>{Math.round(pvgisResult.energy.monthly[hoveredMonth].solar_kWh)} kWh</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-cyan-400">💨</span>
+                                <span>{Math.round(pvgisResult.energy.monthly[hoveredMonth].wind_kWh || 0)} kWh</span>
+                              </div>
+                              <div className="pt-1 border-t border-zinc-700 mt-1 space-y-0.5">
+                                <div className="flex justify-between gap-3">
+                                  <span className="text-zinc-400">Production:</span>
+                                  <span className="font-medium">
+                                    {Math.round(pvgisResult.energy.monthly[hoveredMonth].solar_kWh + (pvgisResult.energy.monthly[hoveredMonth].wind_kWh || 0))} kWh
+                                  </span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span className="text-zinc-400">Consumption:</span>
+                                  <span className="font-medium">
+                                    {Math.round(pvgisResult.energy.monthly[hoveredMonth].consumption_kWh)} kWh
+                                  </span>
+                                </div>
+                                <div className={`flex justify-between gap-3 pt-1 border-t border-zinc-600 ${pvgisResult.energy.monthly[hoveredMonth].balance_kWh >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                  <span>{pvgisResult.energy.monthly[hoveredMonth].balance_kWh >= 0 ? 'Surplus:' : 'Deficit:'}</span>
+                                  <span className="font-medium">
+                                    {Math.abs(Math.round(pvgisResult.energy.monthly[hoveredMonth].balance_kWh))} kWh
+                                  </span>
+                                </div>
+                              </div>
+                              {/* Arrow */}
+                              <div className="absolute left-1/2 bottom-0 transform -translate-x-1/2 translate-y-full">
+                                <div className="border-4 border-transparent border-t-zinc-900"></div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Solar chart (grows up) */}
+                          <div className="flex items-end gap-0.5 h-10">
+                            {pvgisResult.energy.monthly.map((m, i) => {
+                              const maxSolar = Math.max(...pvgisResult.energy.monthly.map(x => x.solar_kWh), 1);
+                              const solarPx = Math.max((m.solar_kWh / maxSolar) * 40, 2);
+                              const ratio = m.solar_kWh / maxSolar;
+                              const solarColor = ratio < 0.5
+                                ? `rgb(${Math.round(239 + ratio * 28)}, ${Math.round(68 + ratio * 190)}, ${Math.round(68 + ratio * 10)})`
+                                : `rgb(${Math.round(253)}, ${Math.round(163 + (ratio - 0.5) * 122)}, ${Math.round(73 - (ratio - 0.5) * 6)})`;
+                              return (
+                                <div
+                                  key={i}
+                                  className="flex-1 cursor-pointer"
+                                  onMouseEnter={() => setHoveredMonth(i)}
+                                >
+                                  <div
+                                    className={`w-full rounded-t-sm transition-opacity ${hoveredMonth === i ? 'opacity-100' : 'opacity-85'}`}
+                                    style={{ height: `${solarPx}px`, backgroundColor: solarColor }}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Month labels */}
+                          <div className="flex gap-0.5 py-1 border-y border-zinc-100">
+                            {['J','F','M','A','M','J','J','A','S','O','N','D'].map((m, i) => (
+                              <div
+                                key={i}
+                                className={`flex-1 text-center text-[8px] font-medium cursor-pointer transition-colors ${hoveredMonth === i ? 'text-zinc-900' : 'text-zinc-500'}`}
+                                onMouseEnter={() => setHoveredMonth(i)}
+                              >
+                                {m}
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Wind chart (grows down) */}
+                          <div className="flex items-start gap-0.5 h-6">
+                            {pvgisResult.energy.monthly.map((m, i) => {
+                              const maxWind = Math.max(...pvgisResult.energy.monthly.map(x => x.wind_kWh || 0), 0.1);
+                              const windPx = m.wind_kWh ? Math.max((m.wind_kWh / maxWind) * 24, 1) : 1;
+                              return (
+                                <div
+                                  key={i}
+                                  className="flex-1 cursor-pointer"
+                                  onMouseEnter={() => setHoveredMonth(i)}
+                                >
+                                  <div
+                                    className={`w-full rounded-b-sm transition-opacity ${hoveredMonth === i ? 'opacity-100' : 'opacity-70'}`}
+                                    style={{ height: `${windPx}px`, backgroundColor: '#06B6D4' }}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Legend */}
+                        <div className="flex items-center justify-center gap-4 text-[9px]">
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-sm bg-amber-400"></span>
+                            <span className="text-amber-600">Solar ↑</span>
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-sm bg-cyan-500 opacity-70"></span>
+                            <span className="text-cyan-600">Wind ↓</span>
+                          </span>
+                        </div>
+
+                        {/* Worst/Best */}
+                        <div className="flex justify-between text-xs mt-3 pt-3 border-t border-zinc-100">
+                          <div>
+                            <span className="text-zinc-400">Worst </span>
+                            <span className="text-red-500 font-medium">{pvgisResult.climate.worst_month}</span>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400">Best </span>
+                            <span className="text-emerald-500 font-medium">{pvgisResult.climate.best_month}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Recalculate button */}
+                      <button
+                        onClick={() => setShowTerminal(true)}
+                        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border border-zinc-200 text-zinc-400 text-sm transition-all duration-200 hover:text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
+                        <span>Recalculate</span>
+                      </button>
+                    </>
+                  )}
+                </motion.div>
+
+                {/* COLUMN 3: Scrollable Quote */}
+                {pvgisResult && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="bg-white rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-200px)]"
+                  >
+                    {/* Quote Header - Fixed */}
+                    <div className="p-4 border-b border-zinc-100 bg-zinc-50">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-lg font-semibold text-zinc-900">Quote</h3>
+                          <p className="text-[10px] text-zinc-400">
+                            {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => window.print()}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                          </svg>
+                          Print
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Scrollable Content */}
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      {/* Solution Summary */}
+                      <div>
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-2">Solution</div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-2xl font-light text-zinc-900">{pvgisResult.solution.stations}×</span>
+                          <span className="text-base text-zinc-600">{pvgisResult.solution.model}</span>
+                        </div>
+                        <div className="flex gap-1.5 mt-2">
+                          {pvgisResult.solution.station_roles.map((role, i) => (
+                            <span
+                              key={i}
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                role === 'Master' ? 'bg-zinc-900 text-white' : 'bg-zinc-200 text-zinc-600'
+                              }`}
+                            >
+                              {role}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* System Specs */}
+                      <div className="grid grid-cols-2 gap-3 pt-3 border-t border-zinc-100">
+                        <div>
+                          <div className="text-[10px] text-zinc-400">Solar Array</div>
+                          <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.total_kwp.toFixed(2)} kWp</div>
+                          <div className="text-[10px] text-zinc-500">{pvgisResult.solution.panels_per_station * pvgisResult.solution.stations}× 720W panels</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-400">Battery</div>
+                          <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.battery.capacity_kWh.toFixed(1)} kWh</div>
+                          <div className="text-[10px] text-zinc-500">{pvgisResult.solution.battery.modules}× {pvgisResult.solution.battery.type}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-400">Autonomy</div>
+                          <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.battery.autonomy_days} days</div>
+                          <div className="text-[10px] text-zinc-500">{pvgisResult.solution.battery.note}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-400">Frame</div>
+                          <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.frame_type}</div>
+                          <div className="text-[10px] text-zinc-500">{pvgisResult.solution.fold_level}</div>
+                        </div>
+                      </div>
+
+                      {/* Wind Turbine */}
+                      {pvgisResult.solution.wind_turbine && (
+                        <div className="pt-3 border-t border-zinc-100">
+                          <div className="flex items-center gap-2">
+                            <span className="text-cyan-500">💨</span>
+                            <div>
+                              <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.wind_count}× VAWT 500W</div>
+                              <div className="text-[10px] text-zinc-500">{pvgisResult.solution.wind_reason}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* H2-Hub */}
+                      {pvgisResult.solution.h2_hub?.enabled && (
+                        <div className="pt-3 border-t border-zinc-100">
+                          <div className="flex items-center gap-2">
+                            <span className="text-emerald-500">⚗️</span>
+                            <div>
+                              <div className="text-sm text-zinc-900 font-medium">{pvgisResult.solution.h2_hub.tanks}× H2-HUB</div>
+                              <div className="text-[10px] text-zinc-500">
+                                {pvgisResult.solution.h2_hub.h2_needed_kg.toFixed(1)} kg H₂ · {pvgisResult.solution.h2_hub.utilization_pct}% utilization
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Climate Data */}
+                      <div className="pt-3 border-t border-zinc-100">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-2">Climate</div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Avg Wind</span>
+                            <span className="text-zinc-700">{pvgisResult.climate.avg_wind_ms.toFixed(1)} m/s</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Max Gust (5yr)</span>
+                            <span className="text-zinc-700">{pvgisResult.climate.max_gust_5yr_kmh ? (pvgisResult.climate.max_gust_5yr_kmh / 3.6).toFixed(0) : 'N/A'} m/s</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* BOM Table */}
+                      <div className="pt-3 border-t border-zinc-100">
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-2">Bill of Materials</div>
+                        <div className="space-y-1">
+                          {pvgisResult.pricing.bom.map((item, i) => (
+                            <div key={i} className="flex justify-between text-[10px]">
+                              <span className="text-zinc-600 flex-1">{item.qty}× {item.item}</span>
+                              <span className="text-zinc-400 ml-2">€{item.total.toLocaleString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Warnings */}
+                      {pvgisResult.solution.warnings && pvgisResult.solution.warnings.length > 0 && (
+                        <div className="pt-3 border-t border-amber-100 bg-amber-50 -mx-4 px-4 py-2">
+                          {pvgisResult.solution.warnings.map((w: string, i: number) => (
+                            <div key={i} className="text-amber-600 text-xs flex items-start gap-1">
+                              <span>⚠</span>
+                              <span>{w}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Quote Footer - Fixed */}
+                    <div className="p-4 border-t border-zinc-200 bg-zinc-50">
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-zinc-500 text-sm">Total</span>
+                        <div className="text-right">
+                          <span className="text-3xl font-light text-zinc-900">€{pvgisResult.pricing.retail_eur.toLocaleString()}</span>
+                          <span className="text-xs text-zinc-400 ml-2">+ VAT</span>
+                        </div>
+                      </div>
+                      <div className="flex items-baseline justify-between mt-2">
+                        <span className="text-zinc-400 text-xs">per kWh</span>
+                        <span className="text-zinc-500 text-sm">€{Math.round(pvgisResult.pricing.retail_eur / pvgisResult.solution.battery.capacity_kWh).toLocaleString()}/kWh</span>
+                      </div>
+                      {pvgisResult.pricing.financing && (
+                        <div className="border-t border-zinc-200 mt-3 pt-3 grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-zinc-400 text-xs mb-1">Credit purchase</p>
+                            <p className="text-zinc-500 text-xs">30% down: €{pvgisResult.pricing.financing.credit.down_payment_eur.toLocaleString()}</p>
+                            <p className="text-zinc-900 text-sm font-medium">€{pvgisResult.pricing.financing.credit.monthly_payment_eur}/mo × 10yr</p>
+                            <p className="text-zinc-400 text-xs mt-1">€{pvgisResult.pricing.financing.credit.cost_per_kwh_eur}/kWh</p>
+                          </div>
+                          <div>
+                            <p className="text-zinc-400 text-xs mb-1">EaaS subscription</p>
+                            <p className="text-zinc-500 text-xs">No upfront cost</p>
+                            <p className="text-zinc-900 text-sm font-medium">€{pvgisResult.pricing.financing.eaas.monthly_payment_eur}/mo × 10yr</p>
+                            <p className="text-zinc-400 text-xs mt-1">€{pvgisResult.pricing.financing.eaas.cost_per_kwh_eur}/kWh</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <SlideNav
+        onPrev={view !== 'selection' ? () => { setView('selection'); setSelectedZone(null); setPvgisResult(null); setError(null); setLocationPreview(null); } : undefined}
+        onBack={onComplete}
+        showPrev={view !== 'selection'}
+        showNext={false}
+        prevLabel="BACK"
+        isDark={false}
+      />
+
+      {/* Terminal Configurator */}
+      <AnimatePresence>
+        <MapPicker
+          isOpen={showMap}
+          onClose={() => setShowMap(false)}
+          onSelect={(lat, lon, label) => {
+            const coords = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+            setAddress(coords);
+            setShowMap(false);
+            if (view === 'civil') {
+              setConfig(prev => ({ ...prev, components: 'World', voltageTypes: ['AC'], voltageLevelsAC: ['230V'], acPhase: '1' }));
+            }
+            handleAddressSubmit(coords);
+          }}
+        />
+
+        {showTerminal && selectedZone && (
+          <TerminalConfigurator
+            address={config.coordinates}
+            consumption={config.hourlyConsumption ? parseFloat(config.hourlyConsumption) : Math.round(parseFloat(config.dailyConsumption) / 24 * 1000)}
+            dailyConsumption={config.dailyConsumption ? parseFloat(config.dailyConsumption) : undefined}
+            hoursPerDay={parseFloat(config.hoursPerDay) || 24}
+            zone={selectedZone}
+            components={config.components}
+            peakPower={config.peakPower ? parseFloat(config.peakPower) : 0}
+            acPhase={config.voltageTypes.includes('AC') ? config.acPhase : undefined}
+            acVoltage={config.voltageTypes.includes('AC') ? config.voltageLevelsAC : undefined}
+            mode={view === 'civil' ? 'civil' : 'industrial'}
+            grid={view === 'civil' ? config.grid : false}
+            heatPump={view === 'civil' ? config.heatPump : false}
+            hide={config.hide}
+            onComplete={handleTerminalComplete}
+            onClose={handleCloseTerminal}
+          />
+        )}
+      </AnimatePresence>
+
+    </motion.div>
+  );
+}

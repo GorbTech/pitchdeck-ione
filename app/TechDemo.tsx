@@ -3,6 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import MissionControl from './MissionControl';
+import SlideNav from './components/SlideNav';
+import { fadeAudioOut, fadeAudioIn, AUDIO_GAP } from './hooks/useAudioTransition';
 
 interface Message {
   id: number;
@@ -241,27 +243,84 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
   const messageIdRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Play scene voiceover
+  // Play scene voiceover with smooth transitions
   useEffect(() => {
-    if (!voiceEnabled) return;
+    let cancelled = false;
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
+    const playSceneAudio = async () => {
+      if (!voiceEnabled) {
+        // Without voice, auto-advance after fixed delays
+        const delays: Record<string, number> = {
+          sec0: 15000,
+          messaging: 30000,
+          mission: 20000,
+        };
+        const timer = setTimeout(() => {
+          if (scene === 'sec0') setScene('messaging');
+          else if (scene === 'messaging') setScene('mission');
+          else onBack();
+        }, delays[scene]);
+        return () => clearTimeout(timer);
+      }
 
-    const audioFiles: Record<string, string> = {
-      sec0: '/audio/tech_scene0.mp3',
-      messaging: '/audio/tech_scene1.mp3',
-      mission: '/audio/tech_scene2.mp3',
+      // Fade out previous audio
+      if (audioRef.current && !audioRef.current.paused) {
+        await fadeAudioOut(audioRef.current);
+      }
+
+      // Wait for consistent gap
+      await new Promise(resolve => setTimeout(resolve, AUDIO_GAP));
+
+      if (cancelled) return;
+
+      const audioFiles: Record<string, string> = {
+        sec0: '/audio/tech_scene0.mp3',
+        messaging: '/audio/tech_scene1.mp3',
+        mission: '/audio/tech_scene2.mp3',
+      };
+      const audio = new Audio(audioFiles[scene]);
+      audioRef.current = audio;
+      audio.volume = 0; // Start silent for fade in
+
+      // Auto-advance when audio ends
+      audio.onended = () => {
+        if (scene === 'sec0') {
+          setScene('messaging');
+        } else if (scene === 'messaging') {
+          setScene('mission');
+        } else {
+          onBack();
+        }
+      };
+
+      audio.onerror = () => {
+        // On error, still advance after delay
+        setTimeout(() => {
+          if (scene === 'sec0') setScene('messaging');
+          else if (scene === 'messaging') setScene('mission');
+          else onBack();
+        }, 5000);
+      };
+
+      try {
+        await audio.play();
+        if (!cancelled) {
+          await fadeAudioIn(audio);
+        }
+      } catch (e) {
+        console.error('Audio play error:', e);
+      }
     };
-    const audio = new Audio(audioFiles[scene]);
-    audioRef.current = audio;
-    audio.play().catch(e => console.error('Audio play error:', e));
+
+    playSceneAudio();
 
     return () => {
-      audio.pause();
+      cancelled = true;
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     };
-  }, [scene, voiceEnabled]);
+  }, [scene, voiceEnabled, onBack]);
 
   useEffect(() => {
     if (!isPlaying || stepIndex >= SCENARIO.length) {
@@ -322,18 +381,16 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
               title="AION Fleet Intelligence"
             />
             {/* Navigation */}
-            <button
-              onClick={onBack}
-              className="absolute bottom-20 left-6 z-50 px-4 py-2 text-white/70 hover:text-white text-sm transition-colors"
-            >
-              ← Back to Topics
-            </button>
-            <button
-              onClick={() => setScene('messaging')}
-              className="absolute bottom-20 right-6 z-50 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 text-white text-sm rounded-full border border-cyan-400/30 transition-colors"
-            >
-              Predictive Service →
-            </button>
+            <SlideNav
+              onNext={() => setScene('messaging')}
+              onBack={onBack}
+              showPrev={false}
+              showNext={true}
+              nextLabel="Predictive Service"
+              currentSlide={0}
+              totalSlides={3}
+              isDark={true}
+            />
           </motion.div>
         ) : scene === 'messaging' ? (
           <motion.div
@@ -364,16 +421,16 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
               className="absolute top-6 left-6 lg:left-10"
             >
               <h1
-                className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white tracking-tight"
+                className="text-2xl sm:text-3xl lg:text-4xl poster-title-xl text-white"
                 style={{ textShadow: '0 2px 20px rgba(0,0,0,0.5)' }}
               >
                 SYMBIOTIC INTELLIGENCE
               </h1>
               <div className="mt-4 p-4 rounded-xl bg-black/40 backdrop-blur-sm border border-white/10 max-w-md">
-                <h2 className="text-lg sm:text-xl font-semibold text-cyan-400 tracking-wide mb-3">
+                <h2 className="text-lg sm:text-xl poster-label text-cyan-400 mb-3">
                   PREDICTIVE SERVICE COORDINATION
                 </h2>
-                <div className="space-y-2 text-sm sm:text-base text-white/90">
+                <div className="space-y-2 text-sm sm:text-base text-white/90 poster-body">
                   <p className="flex items-start gap-2">
                     <span className="text-cyan-400 mt-0.5">→</span>
                     <span>iONE detects anomaly → contacts owner → schedules technician</span>
@@ -384,7 +441,7 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
                   </p>
                   <p className="flex items-start gap-2">
                     <span className="text-cyan-400 mt-0.5">→</span>
-                    <span className="font-semibold">Zero dispatcher involvement</span>
+                    <span className="poster-accent">Zero dispatcher involvement</span>
                   </p>
                 </div>
               </div>
@@ -434,30 +491,18 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
             </div>
 
             {/* Navigation */}
-            <button
-              onClick={() => setScene('sec0')}
-              className="absolute bottom-20 left-6 z-50 px-4 py-2 text-white/70 hover:text-white text-sm transition-colors"
-            >
-              ← Fleet Intelligence
-            </button>
-            <button
-              onClick={() => setScene('mission')}
-              className="absolute bottom-20 right-6 z-50 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 text-white text-sm rounded-full border border-cyan-400/30 transition-colors"
-            >
-              Mission Control →
-            </button>
-
-            {/* Progress indicator */}
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-1">
-              {SCENARIO.map((_, i) => (
-                <div
-                  key={i}
-                  className={`w-2 h-2 rounded-full transition-colors ${
-                    i < stepIndex ? 'bg-cyan-400' : 'bg-white/20'
-                  }`}
-                />
-              ))}
-            </div>
+            <SlideNav
+              onPrev={() => setScene('sec0')}
+              onNext={() => setScene('mission')}
+              onBack={onBack}
+              showPrev={true}
+              showNext={true}
+              prevLabel="Fleet Intelligence"
+              nextLabel="Mission Control"
+              currentSlide={1}
+              totalSlides={3}
+              isDark={true}
+            />
           </motion.div>
         ) : (
           <motion.div
@@ -470,18 +515,16 @@ export default function TechDemo({ onBack, voiceEnabled = false }: { onBack: () 
           >
             <MissionControl />
             {/* Navigation */}
-            <button
-              onClick={() => setScene('messaging')}
-              className="absolute bottom-20 left-6 z-50 px-4 py-2 text-white/70 hover:text-white text-sm transition-colors"
-            >
-              ← Predictive Service
-            </button>
-            <button
-              onClick={onBack}
-              className="absolute bottom-20 right-6 z-50 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 text-white text-sm rounded-full border border-cyan-400/30 transition-colors"
-            >
-              Back to Topics →
-            </button>
+            <SlideNav
+              onPrev={() => setScene('messaging')}
+              onBack={onBack}
+              showPrev={true}
+              showNext={false}
+              prevLabel="Predictive Service"
+              currentSlide={2}
+              totalSlides={3}
+              isDark={true}
+            />
           </motion.div>
         )}
       </AnimatePresence>

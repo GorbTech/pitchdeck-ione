@@ -1,0 +1,427 @@
+// =============================================================================
+// iONE Sizing Engine — Hourly Simulation
+// =============================================================================
+// Runs 8760-hour simulation for a single candidate configuration.
+// Replaces the old calculateDailyProfiles() monthly-resolution approach
+// with true hourly energy balance: solar + wind − load − parasitic → battery/H2.
+
+import {
+  HourlyClimateYear,
+  SimulationConfig,
+  SimulationResult,
+  MonthlySummary,
+  ReliabilityPolicy,
+  BatteryDerating,
+  ClimateZone,
+  ENGINE_CONSTANTS,
+} from './types';
+import { LoadProfilePoint, getLoadProfile } from './loadProfiles';
+import type { LoadPattern } from './types';
+
+const EC = ENGINE_CONSTANTS;
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+// ─── Wind Power ──────────────────────────────────────────────────────────────
+
+/**
+ * VAWT 500W H-Darrieus power curve (instantaneous)
+ * Uses cubic wind power equation: P = 0.5 × ρ × A × Cp × V³
+ */
+export function calculateWindPowerW(windSpeedMs: number): number {
+  if (windSpeedMs < EC.VAWT_CUT_IN_MS || windSpeedMs > EC.VAWT_CUT_OUT_MS) return 0;
+  if (windSpeedMs >= EC.VAWT_RATED_MS) return EC.VAWT_RATED_POWER_W;
+
+  const RHO = 1.225;   // kg/m³ air density at sea level
+  const A = 2.4;        // m² swept area (1.2m × 2m)
+  const CP = 0.35;      // Darrieus power coefficient
+  const power = 0.5 * RHO * A * CP * Math.pow(windSpeedMs, 3);
+  return Math.min(power, EC.VAWT_RATED_POWER_W);
+}
+
+/**
+ * Wind shear: adjust 10m speed to turbine height
+ * V_h = V_10 × (h/10)^α
+ */
+export function adjustWindForHeight(windAt10m: number, zone: ClimateZone): number {
+  const alpha = (zone === 'arctic' || zone === 'desert') ? 0.14 : 0.20;
+  return windAt10m * Math.pow(EC.TURBINE_HEIGHT_M / 10, alpha);
+}
+
+// ─── Battery Model ───────────────────────────────────────────────────────────
+
+/**
+ * Temperature-based battery derating (replaces zone-based constants)
+ * LiFePO4 performance drops below 0°C and above 45°C
+ */
+export function getBatteryDerating(
+  nameplateKwh: number,
+  tempC: number
+): BatteryDerating {
+  const dod = 0.90;   // 10% reserve always
+
+  // Temperature factor: smooth curve based on LFP characteristics
+  // -20°C → 0.60, -10°C → 0.75, 0°C → 0.90, 10°C → 0.95, 25°C → 1.00, 45°C → 0.95, 55°C → 0.85
+  let tempFactor: number;
+  if (tempC <= -20) {
+    tempFactor = 0.60;
+  } else if (tempC <= 0) {
+    // Linear interpolation -20..0 → 0.60..0.90
+    tempFactor = 0.60 + (tempC + 20) / 20 * 0.30;
+  } else if (tempC <= 25) {
+    tempFactor = 0.90 + tempC / 25 * 0.10;
+  } else if (tempC <= 45) {
+    tempFactor = 1.0 - (tempC - 25) / 20 * 0.05;
+  } else {
+    tempFactor = 0.95 - (tempC - 45) / 10 * 0.10;
+  }
+  tempFactor = Math.max(0.50, Math.min(1.0, tempFactor));
+
+  // Battery aging factors — sizing uses mid-life, diagnostics can use EOL
+  const BATTERY_AGING_MIDLIFE = 0.90; // mid-life sizing basis (~5-6 years, ~3000 cycles)
+  const BATTERY_AGING_EOL = 0.80;     // end-of-life worst-case (~10 years, ~5000 cycles)
+  const aging = BATTERY_AGING_MIDLIFE;
+  const total = dod * tempFactor * aging;
+  const usableKwh = nameplateKwh * total;
+
+  // Power limits: 1C charge, 1C discharge for LFP
+  const maxChargeW = nameplateKwh * 1000;
+  const maxDischargeW = nameplateKwh * 1000;
+
+  return { dod, tempFactor, aging, total, usableKwh, maxChargeW, maxDischargeW };
+}
+
+// ─── Parasitic Loads ─────────────────────────────────────────────────────────
+
+/**
+ * Estimate hourly parasitic power draw (W) from thermal management
+ * and station electronics. Returns watts consumed from battery/solar.
+ */
+function getParasiticLoadW(zone: ClimateZone, tempC: number, stations: number): number {
+  // Base: controller + sensors + comms ≈ 15W per station
+  let parasitic = 15 * stations;
+
+  if (zone === 'arctic' && tempC < 5) {
+    // PTC heaters: ~100W per battery module when cold, duty cycle based on temp
+    const heaterDuty = tempC < -10 ? 0.8 : tempC < 0 ? 0.5 : 0.2;
+    parasitic += 100 * heaterDuty * stations;  // simplified: 1 heater per station avg
+  }
+
+  if (zone === 'desert' && tempC > 35) {
+    // Compressor cooling: 750W per station, duty cycle based on temp
+    const coolerDuty = tempC > 45 ? 0.8 : tempC > 40 ? 0.5 : 0.2;
+    parasitic += 750 * coolerDuty * stations;
+  }
+
+  return parasitic;
+}
+
+// ─── Main Simulation ─────────────────────────────────────────────────────────
+
+/**
+ * Run 8760-hour simulation for a given system configuration.
+ * Returns detailed energy balance results.
+ *
+ * The simulation uses multi-pass warmup: repeat the year until battery SOC
+ * at end-of-year converges to start-of-year (within threshold).
+ * This avoids artifacts from arbitrary initial SOC.
+ */
+export function simulateYear(
+  config: SimulationConfig,
+  climate: HourlyClimateYear,
+  dailyConsumptionKwh: number,
+  zone: ClimateZone,
+  loadPattern: LoadPattern,
+  heatPump: boolean,
+  policy: ReliabilityPolicy,
+  grid: boolean
+): SimulationResult {
+
+  const { stations, batteryModules, windTurbines, h2Hubs, panelsPerStation } = config;
+
+  // Scale factors
+  const panelScale = panelsPerStation / 6;  // climate data is for 6 panels
+  const useWind = windTurbines > 0;
+  const useH2 = h2Hubs > 0;
+
+  // Battery capacity (nameplate)
+  const batteryNominalKwh = batteryModules * EC.BATTERY_MODULE_KWH;
+  // Will be derated per-hour based on temperature
+
+  // H2 storage state
+  const h2MaxKg = h2Hubs * EC.H2_STORAGE_KG_PER_HUB;
+  let h2StorageKg = h2MaxKg * 0.5;  // start half full
+
+  // Pre-compute load profiles per month
+  const monthlyLoadProfiles: LoadProfilePoint[][] = [];
+  for (let m = 0; m < 12; m++) {
+    monthlyLoadProfiles.push(getLoadProfile(loadPattern, m, heatPump));
+  }
+
+  // ─── Multi-pass warmup ───
+  let socWh = batteryNominalKwh * 1000 * 0.5;  // start at 50%
+  let passes = 0;
+
+  for (let pass = 0; pass < EC.MAX_WARMUP_PASSES; pass++) {
+    const startSoc = socWh;
+    h2StorageKg = h2MaxKg * 0.5;
+
+    for (let i = 0; i < climate.data.length; i++) {
+      const p = climate.data[i];
+      const derating = getBatteryDerating(batteryNominalKwh, p.temp_c);
+      const batMaxWh = derating.usableKwh * 1000;
+      socWh = Math.min(socWh, batMaxWh);  // clamp to current usable
+
+      const loadProfile = monthlyLoadProfiles[p.month];
+      const loadFraction = loadProfile[p.hour]?.fraction ?? (1 / 24);
+      const loadW = dailyConsumptionKwh * 1000 * loadFraction;
+
+      const solarW = p.pv_w * panelScale * stations;
+      const windW = useWind
+        ? calculateWindPowerW(adjustWindForHeight(p.wind_ms, zone)) * windTurbines
+        : 0;
+      const parasiticW = getParasiticLoadW(zone, p.temp_c, stations);
+
+      const generationW = solarW + windW;
+      const demandW = loadW + parasiticW;
+      const netW = generationW - demandW;
+
+      if (netW >= 0) {
+        // Surplus: charge battery, then H2 electrolysis, then curtail
+        const canChargeW = Math.min(netW, derating.maxChargeW);
+        const chargeWh = Math.min(canChargeW, batMaxWh - socWh);
+        socWh += chargeWh * EC.BATTERY_RTE;
+        let remainW = netW - chargeWh;
+
+        if (useH2 && remainW > 0 && h2StorageKg < h2MaxKg) {
+          const electrolyzerMaxW = 2400 * h2Hubs;
+          const electW = Math.min(remainW, electrolyzerMaxW);
+          const kgProduced = (electW / 1000) * EC.H2_ELECTROLYSIS_EFF / EC.H2_KWH_PER_KG;
+          const kgActual = Math.min(kgProduced, h2MaxKg - h2StorageKg);
+          h2StorageKg += kgActual;
+          remainW -= electW * (kgActual / (kgProduced || 1));
+        }
+      } else {
+        // Deficit: discharge battery, then H2 fuel cell
+        const deficitW = -netW;
+        const canDischargeW = Math.min(deficitW, derating.maxDischargeW);
+        const dischargeWh = Math.min(canDischargeW, socWh);
+        socWh -= dischargeWh;
+        let shortfallW = deficitW - dischargeWh;
+
+        if (useH2 && shortfallW > 0 && h2StorageKg > 0) {
+          const fuelCellMaxW = 500 * h2Hubs;
+          const fcW = Math.min(shortfallW, fuelCellMaxW);
+          const kgNeeded = (fcW / 1000) / (EC.H2_KWH_PER_KG * EC.H2_FUELCELL_EFF);
+          const kgActual = Math.min(kgNeeded, h2StorageKg);
+          h2StorageKg -= kgActual;
+        }
+      }
+    }
+
+    passes = pass + 1;
+    if (Math.abs(socWh - startSoc) < EC.SOC_CONVERGENCE_THRESHOLD_WH) break;
+  }
+
+  // ─── Final measurement pass ───
+  const convergedStartSoc = socWh;
+  const convergedStartH2 = h2StorageKg;
+  socWh = convergedStartSoc;
+  h2StorageKg = convergedStartH2;
+
+  // Accumulators
+  let totalSolarKwh = 0;
+  let totalWindKwh = 0;
+  let totalConsumedKwh = 0;
+  let totalParasiticKwh = 0;
+  let curtailedKwh = 0;
+  let unmetKwh = 0;
+  let unmetHours = 0;
+  let h2ProducedKg = 0;
+  let h2ConsumedKg = 0;
+  let minSocKwh = socWh / 1000;
+  let maxSocKwh = socWh / 1000;
+  let totalChargedKwh = 0;
+  let maxDeficitRunHours = 0;
+  let currentDeficitRun = 0;
+
+  // Monthly accumulators
+  const monthly: {
+    solarKwh: number; windKwh: number; consumedKwh: number; parasiticKwh: number;
+    fromBatteryKwh: number; curtailedKwh: number; unmetKwh: number;
+    minSocKwh: number; maxSocKwh: number; tempSum: number; tempCount: number;
+  }[] = Array.from({ length: 12 }, () => ({
+    solarKwh: 0, windKwh: 0, consumedKwh: 0, parasiticKwh: 0,
+    fromBatteryKwh: 0, curtailedKwh: 0, unmetKwh: 0,
+    minSocKwh: Infinity, maxSocKwh: -Infinity, tempSum: 0, tempCount: 0,
+  }));
+
+  for (let i = 0; i < climate.data.length; i++) {
+    const p = climate.data[i];
+    const m = p.month;
+    const derating = getBatteryDerating(batteryNominalKwh, p.temp_c);
+    const batMaxWh = derating.usableKwh * 1000;
+    socWh = Math.min(socWh, batMaxWh);
+
+    const loadProfile = monthlyLoadProfiles[m];
+    const loadFraction = loadProfile[p.hour]?.fraction ?? (1 / 24);
+    const loadW = dailyConsumptionKwh * 1000 * loadFraction;
+
+    const solarW = p.pv_w * panelScale * stations;
+    const windW = useWind
+      ? calculateWindPowerW(adjustWindForHeight(p.wind_ms, zone)) * windTurbines
+      : 0;
+    const parasiticW = getParasiticLoadW(zone, p.temp_c, stations);
+
+    const generationW = solarW + windW;
+    const demandW = loadW + parasiticW;
+    const netW = generationW - demandW;
+
+    // Accumulate generation/consumption (in kWh, 1 hour = 1 Wh per W)
+    totalSolarKwh += solarW / 1000;
+    totalWindKwh += windW / 1000;
+    totalConsumedKwh += loadW / 1000;
+    totalParasiticKwh += parasiticW / 1000;
+    monthly[m].solarKwh += solarW / 1000;
+    monthly[m].windKwh += windW / 1000;
+    monthly[m].consumedKwh += loadW / 1000;
+    monthly[m].parasiticKwh += parasiticW / 1000;
+    monthly[m].tempSum += p.temp_c;
+    monthly[m].tempCount++;
+
+    let hourUnmet = 0;
+    let hourCurtailed = 0;
+    let hourFromBattery = 0;
+
+    if (netW >= 0) {
+      // Surplus
+      const canChargeW = Math.min(netW, derating.maxChargeW);
+      const chargeWh = Math.min(canChargeW, batMaxWh - socWh);
+      const actualCharge = chargeWh * EC.BATTERY_RTE;
+      socWh += actualCharge;
+      totalChargedKwh += actualCharge / 1000;
+      let remainW = netW - chargeWh;
+
+      // H2 electrolysis from excess
+      if (useH2 && remainW > 0 && h2StorageKg < h2MaxKg) {
+        const electrolyzerMaxW = 2400 * h2Hubs;
+        const electW = Math.min(remainW, electrolyzerMaxW);
+        const kgProduced = (electW / 1000) * EC.H2_ELECTROLYSIS_EFF / EC.H2_KWH_PER_KG;
+        const kgActual = Math.min(kgProduced, h2MaxKg - h2StorageKg);
+        h2StorageKg += kgActual;
+        h2ProducedKg += kgActual;
+        remainW -= electW * (kgActual / (kgProduced || 1));
+      }
+
+      hourCurtailed = remainW / 1000;
+      currentDeficitRun = 0;
+    } else {
+      // Deficit
+      const deficitW = -netW;
+      const canDischargeW = Math.min(deficitW, derating.maxDischargeW);
+      const dischargeWh = Math.min(canDischargeW, socWh);
+      socWh -= dischargeWh;
+      hourFromBattery = dischargeWh / 1000;
+      let shortfallW = deficitW - dischargeWh;
+
+      // H2 fuel cell backup
+      if (useH2 && shortfallW > 0 && h2StorageKg > 0) {
+        const fuelCellMaxW = 500 * h2Hubs;
+        const fcW = Math.min(shortfallW, fuelCellMaxW);
+        const kgNeeded = (fcW / 1000) / (EC.H2_KWH_PER_KG * EC.H2_FUELCELL_EFF);
+        const kgActual = Math.min(kgNeeded, h2StorageKg);
+        h2StorageKg -= kgActual;
+        h2ConsumedKg += kgActual;
+        const fcDelivered = kgActual * EC.H2_KWH_PER_KG * EC.H2_FUELCELL_EFF * 1000;
+        shortfallW -= fcDelivered;
+      }
+
+      if (shortfallW > 0) {
+        if (!grid) {
+          hourUnmet = shortfallW / 1000;
+        }
+        // If grid, shortfall is covered — no unmet
+      }
+
+      currentDeficitRun++;
+      if (currentDeficitRun > maxDeficitRunHours) maxDeficitRunHours = currentDeficitRun;
+    }
+
+    // Track extremes
+    const socKwh = socWh / 1000;
+    if (socKwh < minSocKwh) minSocKwh = socKwh;
+    if (socKwh > maxSocKwh) maxSocKwh = socKwh;
+    if (socKwh < monthly[m].minSocKwh) monthly[m].minSocKwh = socKwh;
+    if (socKwh > monthly[m].maxSocKwh) monthly[m].maxSocKwh = socKwh;
+
+    curtailedKwh += hourCurtailed;
+    unmetKwh += hourUnmet;
+    if (hourUnmet > 0) unmetHours++;
+    monthly[m].curtailedKwh += hourCurtailed;
+    monthly[m].unmetKwh += hourUnmet;
+    monthly[m].fromBatteryKwh += hourFromBattery;
+  }
+
+  // ─── Build monthly summary ───
+  const monthlySummary: MonthlySummary[] = monthly.map((m, i) => {
+    const totalSupply = m.solarKwh + m.windKwh;
+    const totalDemand = m.consumedKwh + m.parasiticKwh;
+    const selfSufficiency = totalDemand > 0
+      ? Math.max(0, Math.min(100, ((totalDemand - m.unmetKwh) / totalDemand) * 100))
+      : 100;
+
+    return {
+      month: i + 1,
+      monthName: MONTH_NAMES[i],
+      solarKwh: round2(m.solarKwh),
+      windKwh: round2(m.windKwh),
+      consumedKwh: round2(m.consumedKwh),
+      parasiticKwh: round2(m.parasiticKwh),
+      fromBatteryKwh: round2(m.fromBatteryKwh),
+      curtailedKwh: round2(m.curtailedKwh),
+      unmetKwh: round2(m.unmetKwh),
+      minSocKwh: m.minSocKwh === Infinity ? 0 : round2(m.minSocKwh),
+      maxSocKwh: m.maxSocKwh === -Infinity ? 0 : round2(m.maxSocKwh),
+      avgTempC: m.tempCount > 0 ? round1(m.tempSum / m.tempCount) : 15,
+      selfSufficiencyPct: Math.round(selfSufficiency),
+    };
+  });
+
+  // LOLP = fraction of hours with unmet load
+  const lolp = climate.data.length > 0 ? unmetHours / climate.data.length : 0;
+
+  // Equivalent battery cycles = total energy charged / usable capacity
+  const avgDerating = getBatteryDerating(batteryNominalKwh, 15);  // reference temp
+  const equivalentBatteryCycles = avgDerating.usableKwh > 0
+    ? totalChargedKwh / avgDerating.usableKwh
+    : 0;
+
+  // Feasibility check against reliability policy
+  const feasible = unmetHours <= policy.maxUnmetHours && unmetKwh <= policy.maxUnmetKwh;
+
+  return {
+    feasible,
+    lolp: round4(lolp),
+    unmetHours,
+    unmetKwh: round2(unmetKwh),
+    minSocKwh: round2(minSocKwh),
+    maxSocKwh: round2(maxSocKwh),
+    curtailedKwh: round2(curtailedKwh),
+    totalSolarKwh: round2(totalSolarKwh),
+    totalWindKwh: round2(totalWindKwh),
+    totalConsumedKwh: round2(totalConsumedKwh),
+    totalParasiticKwh: round2(totalParasiticKwh),
+    h2ProducedKg: round2(h2ProducedKg),
+    h2ConsumedKg: round2(h2ConsumedKg),
+    equivalentBatteryCycles: round1(equivalentBatteryCycles),
+    maxDeficitRunHours,
+    convergencePassesUsed: passes,
+    monthlySummary,
+  };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function round1(v: number): number { return Math.round(v * 10) / 10; }
+function round2(v: number): number { return Math.round(v * 100) / 100; }
+function round4(v: number): number { return Math.round(v * 10000) / 10000; }

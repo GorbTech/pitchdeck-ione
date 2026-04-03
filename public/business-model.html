@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GT Energy — EaaS Financial Model</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0B1A3B;--bg2:#0F2247;--bg3:#142D5C;--bg4:#1A3670;
+  --surface:#ffffff08;--surface2:#ffffff0f;--surface3:#ffffff18;
+  --text:#E8ECF4;--text2:#9EABC4;--text3:#6B7A96;
+  --accent:#22D68A;--accent2:#1AB674;--accent-bg:#22D68A18;
+  --blue:#4A9EFF;--blue-bg:#4A9EFF18;
+  --red:#FF6B6B;--red-bg:#FF6B6B18;
+  --amber:#FFB347;--amber-bg:#FFB34718;
+  --border:#ffffff12;--border2:#ffffff20;
+  --radius:10px;--radius-lg:14px;
+  --font:'DM Sans',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+html{font-size:15px;scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;min-height:100vh}
+.wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem 4rem}
+
+/* Header */
+.hero{text-align:center;padding:3rem 0 2.5rem;border-bottom:1px solid var(--border)}
+.hero h1{font-size:2rem;font-weight:700;letter-spacing:-0.03em;margin-bottom:0.3rem}
+.hero h1 span{color:var(--accent)}
+.hero p{color:var(--text2);font-size:0.93rem}
+.badge-row{display:flex;gap:8px;justify-content:center;margin-top:1rem}
+.badge{font-size:0.73rem;padding:4px 12px;border-radius:20px;font-weight:500;letter-spacing:0.02em}
+.badge-g{background:var(--accent-bg);color:var(--accent)}
+.badge-b{background:var(--blue-bg);color:var(--blue)}
+.badge-r{background:var(--red-bg);color:var(--red)}
+
+/* Sections */
+.sec{font-size:1.05rem;font-weight:600;margin:2rem 0 0.6rem;color:var(--text);letter-spacing:-0.01em}
+.sub{font-size:0.82rem;color:var(--text3);margin-bottom:0.8rem}
+
+/* Controls */
+.ctrl{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0.4rem 0 1rem}
+.ctrl label{font-size:0.78rem;color:var(--text2);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.ctrl .vl{min-width:38px;font-size:0.85rem;font-weight:600;text-align:right;color:var(--text);font-family:var(--mono)}
+input[type=range]{-webkit-appearance:none;appearance:none;height:4px;background:var(--surface3);border-radius:2px;outline:none;flex:0 0 100px;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);cursor:pointer;border:2px solid var(--bg)}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;border:2px solid var(--bg)}
+input[type=number]{background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:0.82rem;padding:5px 8px;border-radius:6px;width:72px;outline:none;transition:border-color 0.2s}
+input[type=number]:focus{border-color:var(--accent)}
+
+/* Metric cards */
+.g{display:grid;gap:10px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g5{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media(max-width:700px){.g3,.g4,.g5{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.g2,.g3,.g4,.g5{grid-template-columns:1fr}}
+.m{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;transition:border-color 0.2s}
+.m:hover{border-color:var(--border2)}
+.m .l{font-size:0.72rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em}
+.m .v{font-size:1.35rem;font-weight:700;margin:4px 0 0;font-family:var(--mono);letter-spacing:-0.02em}
+.m .s{font-size:0.72rem;color:var(--text3);margin-top:2px}
+.m.ok .v{color:var(--accent)}
+.m.wn .v{color:var(--amber)}
+.m.dn .v{color:var(--red)}
+.m.big{border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0}
+
+/* Tables */
+.tbl-wrap{overflow-x:auto;margin:0.5rem 0;border-radius:var(--radius);border:1px solid var(--border)}
+table{width:100%;font-size:0.8rem;border-collapse:collapse}
+th{text-align:left;color:var(--text3);font-weight:500;padding:10px 12px;background:var(--surface);border-bottom:1px solid var(--border);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em}
+td{padding:9px 12px;border-bottom:1px solid var(--border);color:var(--text2)}
+td:not(:first-child),th:not(:first-child){text-align:right}
+tr:last-child td{border-bottom:none}
+tr.hl td{font-weight:600;color:var(--accent);background:var(--accent-bg)}
+tr.hl2 td{font-weight:600;color:var(--blue);background:var(--blue-bg)}
+tr.hl3 td{font-weight:600;color:var(--red);background:var(--red-bg)}
+
+/* Separator */
+.sep{border:none;border-top:1px solid var(--border);margin:2rem 0}
+
+/* Chart */
+.chart-box{position:relative;height:280px;margin:0.8rem 0;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)}
+
+/* Footer */
+.foot{text-align:center;color:var(--text3);font-size:0.72rem;margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <h1>i<span>ONE</span> EaaS Financial Model</h1>
+  <p>Energy as a Service — Interactive Model for Investors</p>
+  <div class="badge-row">
+    <span class="badge badge-b">Credit (Purchase)</span>
+    <span class="badge badge-g">iONE EaaS</span>
+    <span class="badge badge-r">Diesel Generator</span>
+  </div>
+</div>
+
+<div class="sec">CAPEX — Station Cost</div>
+<div class="ctrl">
+  <label>Production <input type="number" id="cProd" value="4019" step="100" oninput="calc()"> EUR</label>
+  <label>Installation <input type="number" id="cInst" value="400" step="50" oninput="calc()"> EUR</label>
+  <label>Logistics <input type="number" id="cLog" value="180" step="10" oninput="calc()"> EUR</label>
+</div>
+
+<div class="sec">OPEX — Station Expenses / mo</div>
+<div class="ctrl">
+  <label>Cloud/IoT <input type="number" id="oCloud" value="5" style="width:52px" step="1" oninput="calc()"></label>
+  <label>Insurance <input type="number" id="oIns" value="8" style="width:52px" step="1" oninput="calc()"></label>
+  <label>Maintenance <input type="number" id="oMaint" value="12" style="width:52px" step="1" oninput="calc()"></label>
+  <label>SIM <input type="number" id="oSim" value="3" style="width:52px" step="1" oninput="calc()"></label>
+  <label>Support <input type="number" id="oSup" value="7" style="width:52px" step="1" oninput="calc()"></label>
+</div>
+
+<div class="sec">CAPEX Financing (Loan)</div>
+<div class="ctrl">
+  <label>Rate %/yr <input type="range" id="loanRate" min="4" max="15" step="0.5" value="8" oninput="calc()"> <span class="vl" id="loanRateV">8%</span></label>
+  <label>Term, mo <input type="range" id="loanTerm" min="12" max="84" step="6" value="60" oninput="calc()"> <span class="vl" id="loanTermV">60</span></label>
+  <label>LTV % <input type="range" id="ltv" min="50" max="100" step="5" value="80" oninput="calc()"> <span class="vl" id="ltvV">80%</span></label>
+</div>
+
+<div class="sec">EaaS Contract</div>
+<div class="ctrl">
+  <label>Tariff EUR/kWh <input type="range" id="rate" min="0.5" max="2.0" step="0.1" value="1.0" oninput="calc()"> <span class="vl" id="rateV">1.0</span></label>
+  <label>Min. kWh/mo <input type="range" id="kwh" min="100" max="500" step="50" value="250" oninput="calc()"> <span class="vl" id="kwhV">250</span></label>
+  <label>Contract, yrs <input type="range" id="yrs" min="3" max="10" step="1" value="7" oninput="calc()"> <span class="vl" id="yrsV">7</span></label>
+</div>
+
+<div class="sec">Diesel Generator (Competitor)</div>
+<div class="ctrl">
+  <label>Diesel price EUR/L <input type="range" id="dPrice" min="1.0" max="3.0" step="0.1" value="1.9" oninput="calc()"> <span class="vl" id="dPriceV">1.90</span></label>
+  <label>Delivery EUR/L <input type="range" id="dDeliv" min="0" max="2.0" step="0.1" value="1.0" oninput="calc()"> <span class="vl" id="dDelivV">1.00</span></label>
+  <label>Consumption L/kWh <input type="range" id="dSfc" min="0.2" max="0.5" step="0.01" value="0.3" oninput="calc()"> <span class="vl" id="dSfcV">0.30</span></label>
+  <label>Service EUR/mo <input type="range" id="dMaint" min="20" max="100" step="5" value="40" oninput="calc()"> <span class="vl" id="dMaintV">40</span></label>
+</div>
+
+<hr class="sep">
+<div class="sec">Cost per kWh for Customer</div>
+<div class="g g3" id="kwhCards"></div>
+
+<hr class="sep">
+<div class="sec">Unit P&L — Single EaaS Station (incl. loan)</div>
+<div class="g g5" id="kpiCards"></div>
+<div class="tbl-wrap" style="margin-top:12px"><table id="pnlTable"></table></div>
+
+<hr class="sep">
+<div class="sec">Customer Comparison: What's Cheaper Long-Term?</div>
+<p class="sub">Total customer cost over full contract at 250+ kWh/mo consumption</p>
+<div class="tbl-wrap"><table id="compClient"></table></div>
+
+<hr class="sep">
+<div class="sec">GT Comparison: Profit per Unit</div>
+<div class="tbl-wrap"><table id="compGT"></table></div>
+
+<hr class="sep">
+<div class="sec">Portfolio & Company Valuation</div>
+<div class="ctrl">
+  <label>Stations <input type="range" id="fleet" min="50" max="1000" step="50" value="100" oninput="calc()"> <span class="vl" id="fleetV">100</span></label>
+  <label>ARR Multiple <input type="range" id="mult" min="3" max="10" step="1" value="6" oninput="calc()"> <span class="vl" id="multV">6x</span></label>
+</div>
+<div class="g g4" id="portCards"></div>
+
+<hr class="sep">
+<div class="sec">Portfolio Cash Flow (Cumulative, incl. loan)</div>
+<div class="chart-box"><canvas id="chart"></canvas></div>
+
+<hr class="sep">
+<div class="sec">Sensitivity Analysis — Net Profit per Station</div>
+<div class="tbl-wrap"><table id="sensTable"></table></div>
+
+<div class="foot">
+  GT GmbH &middot; Berlin, Germany &middot; gtpro.ai &middot; Strictly Confidential<br>
+  All figures are projections. Actual results may vary.
+</div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const eur=n=>{const a=Math.round(Math.abs(n)).toLocaleString('de-DE');return(n<0?'-':'')+'€'+a};
+let ch;
+
+function annuity(p,rY,m){
+  if(m<=0||p<=0)return 0;
+  const r=rY/100/12;
+  if(r===0)return p/m;
+  return p*r*Math.pow(1+r,m)/(Math.pow(1+r,m)-1);
+}
+
+function calc(){
+  const cProd=+$('cProd').value,cInst=+$('cInst').value,cLog=+$('cLog').value;
+  const capex=cProd+cInst+cLog;
+  const oC=+$('oCloud').value,oI=+$('oIns').value,oM=+$('oMaint').value,oS=+$('oSim').value,oSu=+$('oSup').value;
+  const opexM=oC+oI+oM+oS+oSu;
+  const lRate=+$('loanRate').value,lTerm=+$('loanTerm').value,ltv=+$('ltv').value/100;
+  const rate=+$('rate').value,kwh=+$('kwh').value,yrs=+$('yrs').value;
+  const mos=yrs*12,minRev=Math.round(kwh*rate);
+  const dP=+$('dPrice').value,dD=+$('dDeliv').value,dSfc=+$('dSfc').value,dMt=+$('dMaint').value;
+  const dieselPerKwh=(dP+dD)*dSfc;
+  const dieselMonthly=dieselPerKwh*kwh+dMt;
+
+  $('rateV').textContent=rate.toFixed(1);$('kwhV').textContent=kwh;$('yrsV').textContent=yrs;
+  $('loanRateV').textContent=lRate+'%';$('loanTermV').textContent=lTerm;$('ltvV').textContent=Math.round(ltv*100)+'%';
+  $('dPriceV').textContent=dP.toFixed(2);$('dDelivV').textContent=dD.toFixed(2);$('dSfcV').textContent=dSfc.toFixed(2);$('dMaintV').textContent=dMt;
+  $('fleetV').textContent=$('fleet').value;$('multV').textContent=$('mult').value+'x';
+
+  const loanAmt=capex*ltv,equity=capex-loanAmt;
+  const mp=annuity(loanAmt,lRate,lTerm);
+  const totalInterest=mp*lTerm-loanAmt;
+  const netDuringLoan=minRev-opexM-mp;
+  const netAfterLoan=minRev-opexM;
+  const totalRev=minRev*mos,totalOpex=opexM*mos;
+  const totalLoanPay=mp*Math.min(lTerm,mos);
+  const netProfit=totalRev-totalOpex-capex-totalInterest;
+  const roi=capex>0?Math.round(netProfit/capex*100):0;
+
+  let cumCF=-equity,paybackM=mos;
+  for(let m=1;m<=mos;m++){cumCF+=(m<=lTerm?netDuringLoan:netAfterLoan);if(cumCF>=0){paybackM=m;break;}}
+
+  $('kwhCards').innerHTML=`
+    <div class="m ok"><p class="l">iONE EaaS</p><p class="v">€${rate.toFixed(2)}<span style="font-size:.7rem;font-weight:400">/kWh</span></p><p class="s">No CAPEX for customer</p></div>
+    <div class="m dn"><p class="l">Diesel Generator</p><p class="v">€${dieselPerKwh.toFixed(2)}<span style="font-size:.7rem;font-weight:400">/kWh</span></p><p class="s">Fuel + delivery + service</p></div>
+    <div class="m"><p class="l">Customer Savings</p><p class="v">${Math.round((1-rate/dieselPerKwh)*100)}%</p><p class="s">${eur(Math.round(dieselMonthly-minRev))}/mo vs diesel</p></div>
+  `;
+
+  $('kpiCards').innerHTML=`
+    <div class="m"><p class="l">Loan/mo</p><p class="v">€${Math.round(mp)}</p><p class="s">${lTerm} mo @ ${lRate}%</p></div>
+    <div class="m ${netDuringLoan>0?'ok':'wn'}"><p class="l">CF (loan)</p><p class="v">${eur(Math.round(netDuringLoan))}<span style="font-size:.7rem">/mo</span></p><p class="s">${minRev}-${opexM}-${Math.round(mp)}</p></div>
+    <div class="m ok"><p class="l">CF (after)</p><p class="v">${eur(Math.round(netAfterLoan))}<span style="font-size:.7rem">/mo</span></p><p class="s">Net income</p></div>
+    <div class="m ok"><p class="l">Net Profit</p><p class="v">${eur(netProfit)}</p><p class="s">ROI ${roi}%</p></div>
+    <div class="m ${paybackM<=36?'ok':'wn'}"><p class="l">Payback</p><p class="v">${paybackM} mo</p><p class="s">${(paybackM/12).toFixed(1)} yrs</p></div>
+  `;
+
+  $('pnlTable').innerHTML=`<thead><tr><th>Metric</th><th>Month (loan)</th><th>Month (after)</th><th>Contract (${yrs} yrs)</th></tr></thead><tbody>
+    <tr><td>EaaS Revenue (min.)</td><td>${eur(minRev)}</td><td>${eur(minRev)}</td><td>${eur(totalRev)}</td></tr>
+    <tr><td>OPEX</td><td>-${eur(opexM)}</td><td>-${eur(opexM)}</td><td>-${eur(totalOpex)}</td></tr>
+    <tr><td>Loan (annuity)</td><td>-${eur(Math.round(mp))}</td><td>€0</td><td>-${eur(Math.round(totalLoanPay))}</td></tr>
+    <tr class="hl"><td>Operating CF</td><td>${eur(Math.round(netDuringLoan))}</td><td>${eur(Math.round(netAfterLoan))}</td><td></td></tr>
+    <tr><td>Equity (own funds)</td><td colspan="2"></td><td>-${eur(Math.round(equity))}</td></tr>
+    <tr><td>Loan interest paid</td><td colspan="2"></td><td>-${eur(Math.round(totalInterest))}</td></tr>
+    <tr class="hl"><td>Net Profit</td><td colspan="2"></td><td>${eur(netProfit)}</td></tr>
+  </tbody>`;
+
+  const dieselTotal=Math.round(dieselMonthly*mos);
+  const eaasTotal=Math.round(minRev*mos);
+  const creditClientTotal=8400;
+  const creditMarginBoth=3990+3990;
+
+  $('compClient').innerHTML=`<thead><tr><th>Parameter</th><th><span class="badge badge-b">Credit (Purchase)</span></th><th><span class="badge badge-g">iONE EaaS</span></th><th><span class="badge badge-r">Diesel</span></th></tr></thead><tbody>
+    <tr><td>Customer CAPEX</td><td>€3,600 (30%)</td><td>€0</td><td>€800–2,000</td></tr>
+    <tr><td>Payment / mo</td><td>€165</td><td>${eur(minRev)}</td><td>${eur(Math.round(dieselMonthly))}</td></tr>
+    <tr><td>Payment term</td><td>36 mo</td><td>${mos} mo</td><td>∞ (ongoing)</td></tr>
+    <tr><td>Total over ${yrs} yrs</td><td>€8,400</td><td>${eur(eaasTotal)}</td><td>${eur(dieselTotal)}</td></tr>
+    <tr><td>After payoff</td><td>Free (owned)</td><td>Return / buyout</td><td>Keeps paying</td></tr>
+    <tr class="hl"><td>Savings vs diesel</td><td>${eur(dieselTotal-creditClientTotal)}</td><td>${eur(dieselTotal-eaasTotal)}</td><td>—</td></tr>
+    <tr><td>CO₂</td><td>0</td><td>0</td><td>~${(0.6*kwh*mos/1000).toFixed(1)} tonnes</td></tr>
+  </tbody>`;
+
+  $('compGT').innerHTML=`<thead><tr><th>For GT + Partner</th><th><span class="badge badge-b">Credit</span></th><th><span class="badge badge-g">EaaS</span></th></tr></thead><tbody>
+    <tr><td>Cost of goods</td><td>${eur(capex)}</td><td>${eur(capex)}</td></tr>
+    <tr><td>Cost of financing</td><td>€0 (customer borrows)</td><td>${eur(Math.round(totalInterest))}</td></tr>
+    <tr class="hl2"><td>Margin (credit)</td><td colspan="2">${eur(creditMarginBoth)} one-time</td></tr>
+    <tr class="hl"><td>Margin (EaaS)</td><td colspan="2">${eur(netProfit)} over ${yrs} yrs</td></tr>
+    <tr><td>Profit multiplier</td><td colspan="2">${(netProfit/creditMarginBoth).toFixed(1)}x</td></tr>
+    <tr><td>Cash flow speed</td><td>Week 1</td><td>Month ${paybackM}</td></tr>
+    <tr><td>Residual value</td><td>€0</td><td>Asset on balance sheet</td></tr>
+  </tbody>`;
+
+  const fleet=+$('fleet').value,mult=+$('mult').value;
+  const fMrr=fleet*minRev,fArr=fMrr*12;
+  const fCapex=fleet*capex;
+  const val=fArr*mult;
+  const fAnnProfit=fleet*netAfterLoan*12;
+  $('portCards').innerHTML=`
+    <div class="m"><p class="l">CAPEX (equity ${Math.round((1-ltv)*100)}%)</p><p class="v">${eur(Math.round(fleet*equity))}</p><p class="s">${fleet} × ${eur(Math.round(equity))}</p></div>
+    <div class="m ok"><p class="l">MRR</p><p class="v">${eur(fMrr)}</p><p class="s">After loan repayment</p></div>
+    <div class="m ok"><p class="l">ARR</p><p class="v">${eur(fArr)}</p><p class="s">Annual recurring</p></div>
+    <div class="m big"><p class="l">Valuation ${mult}x ARR</p><p class="v" style="color:var(--text)">${eur(val)}</p><p class="s">EBITDA: ${eur(fAnnProfit*mult)}</p></div>
+  `;
+
+  /* Chart */
+  const labels=[],eaasD=[],creditD=[],dieselD=[];
+  let eCum=-fleet*equity;
+  for(let m=0;m<=mos;m+=3){
+    labels.push(m===0?'0':'M'+m);
+    if(m===0){eaasD.push(Math.round(-fleet*equity));creditD.push(Math.round(fleet*(creditMarginBoth-capex)));dieselD.push(0);continue;}
+    let cf=0;for(let mm=1;mm<=m;mm++)cf+=(mm<=lTerm?netDuringLoan:netAfterLoan);
+    eaasD.push(Math.round(-fleet*equity+fleet*cf));
+    creditD.push(Math.round(fleet*(creditMarginBoth-capex)));
+    dieselD.push(Math.round(-fleet*dieselMonthly*m));
+  }
+
+  if(ch)ch.destroy();
+  ch=new Chart($('chart'),{type:'line',data:{labels,datasets:[
+    {label:'EaaS (incl. loan)',data:eaasD,borderColor:'#22D68A',backgroundColor:'#22D68A10',fill:true,tension:0.3,pointRadius:0,borderWidth:2},
+    {label:'Credit sale (one-time margin)',data:creditD,borderColor:'#4A9EFF',backgroundColor:'#4A9EFF08',fill:true,tension:0,pointRadius:0,borderWidth:1.5,borderDash:[6,4]},
+    {label:'Customer diesel cost',data:dieselD,borderColor:'#FF6B6B',backgroundColor:'#FF6B6B08',fill:true,tension:0.3,pointRadius:0,borderWidth:1.5,borderDash:[3,3]}
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11,family:'DM Sans'},color:'#6B7A96',boxWidth:12,padding:14}}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:'#6B7A96',maxTicksLimit:12}},y:{grid:{color:'#ffffff08'},ticks:{font:{size:10,family:'JetBrains Mono'},color:'#6B7A96',callback:v=>v>=1e6?'€'+Math.round(v/1e6)+'M':v>=1e3?'€'+Math.round(v/1e3)+'k':'€'+v},border:{display:false}}}}});
+
+  /* Sensitivity */
+  const sensRates=[0.7,0.8,1.0,1.2,1.5],sensYrs=[5,7,10];
+  let sH='<thead><tr><th>Tariff / Term</th>';
+  sensYrs.forEach(y=>sH+=`<th>${y} yrs</th>`);
+  sH+='</tr></thead><tbody>';
+  sensRates.forEach(r=>{
+    sH+=`<tr><td>€${r.toFixed(1)}/kWh</td>`;
+    sensYrs.forEach(y=>{
+      const ms2=y*12,rv=Math.round(kwh*r)*ms2,ox=opexM*ms2;
+      const np=rv-ox-capex-totalInterest;
+      const ro=capex>0?Math.round(np/capex*100):0;
+      sH+=`<td>${eur(np)} (${ro}%)</td>`;
+    });
+    sH+='</tr>';
+  });
+  sH+='</tbody>';
+  $('sensTable').innerHTML=sH;
+}
+
+calc();
+</script>
+</body>
+</html>

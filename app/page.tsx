@@ -4,21 +4,34 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import Image from 'next/image';
 import TechDemo from './TechDemo';
+import GrantImpact from './GrantImpact';
+import VCImpact from './VCImpact';
+import ImplementationImpact from './ImplementationImpact';
+import ProductsShowcase from './ProductsShowcase';
+import HardwareDeepDive from './HardwareDeepDive';
+import ProductLine from './ProductLine';
+import ClimateImpact from './ClimateImpact';
+import PartnershipShowcase from './PartnershipShowcase';
+import ContactShowcase from './ContactShowcase';
+import BusinessModel from './BusinessModel';
 
 const TOPICS = [
-  { id: 'climate', title: 'PLANETARY SYMBIOSIS', color: '#0EA5E9' },
-  { id: 'defence', title: 'LOGISTICS IMMUNITY', color: '#1F2937' },
-  { id: 'economics', title: 'ACCESSIBLE AUTONOMY', color: '#059669' },
-  { id: 'tech', title: 'SYMBIOTIC INTELLIGENCE', color: '#4F46E5' },
-  { id: 'team', title: 'BUILDERS OF INTENT', color: '#78716C' },
-  { id: 'production', title: 'SCALING AUTONOMY', color: '#D97706' },
-  { id: 'market', title: 'WHERE AUTONOMY MATTERS', color: '#0891B2' },
-  { id: 'financials', title: 'INVESTING IN EVOLUTION', color: '#1E40AF' },
+  { id: 'climate', slug: 'climate', title: 'CLIMATE IMPACT', color: '#0EA5E9' },
+  { id: 'tech', slug: 'technology', title: 'SYMBIOTIC INTELLIGENCE', color: '#4F46E5' },
+  { id: 'lineup', slug: 'configurator', title: 'CONFIGURATOR', color: '#10B981' },
+  { id: 'products', slug: 'hardware', title: 'HARDWARE DEEP DIVE', color: '#F59E0B' },
+  { id: 'business', slug: 'business-model', title: 'BUSINESS MODEL', color: '#F97316' },
+  { id: 'partnership', slug: 'partnership', title: 'PARTNERSHIP', color: '#8B5CF6' },
+  { id: 'contact', slug: 'contact', title: 'CONTACT', color: '#6B7280' },
 ];
+
+// Resolve slug ↔ id
+const slugToId = Object.fromEntries(TOPICS.map(t => [t.slug, t.id]));
+const idToSlug = Object.fromEntries(TOPICS.map(t => [t.id, t.slug]));
 
 // Structured data for special topic layouts
 const CLIMATE_DATA = {
-  title: 'PLANETARY SYMBIOSIS',
+  title: 'CLIMATE IMPACT',
   lines: [
     { value: '8,000 L', text: 'diesel replaced per unit annually' },
     { value: '21 tonnes', text: 'CO₂ avoided per unit annually' },
@@ -28,14 +41,17 @@ const CLIMATE_DATA = {
 };
 
 const TOPIC_TEXT: Record<string, string> = {
-  climate: "PLANETARY SYMBIOSIS\n\n8,000 L diesel replaced per unit annually\n21 tonnes CO₂ avoided per unit annually\n105,000 t CO₂ avoided at fleet scale (5,000 units)\nZero emissions · Silent operation",
-  defence: "LOGISTICS IMMUNITY\n\nMIL-STD-810H    certified platform\n180° fold       90% thermal signature reduction\n30 min          full relocation\n12 days         autonomy without sun\n\nEnergy arrives silently. Continuously. Independently.",
-  economics: "ACCESSIBLE AUTONOMY\n\niONE             €15,000 – €25,000\nCompetitors      €50,000 – €90,000\n\n3–4×             cost advantage\n50–75%           gross margin\n€49/month        SaaS monitoring\n<3 years         customer payback vs diesel\n\nIndependence — affordable, deployable, yours.",
+  climate: "CLIMATE IMPACT\n\n8,000 L diesel replaced per unit annually\n21 tonnes CO₂ avoided per unit annually\n105,000 t CO₂ avoided at fleet scale (5,000 units)\nZero emissions · Silent operation",
   tech: "SYMBIOTIC INTELLIGENCE\n\niONEOS           Edge AI platform\n4.32 kWp         dual-axis solar tracking\n16–48 kWh        LiFePO4 storage\n>2σ              anomaly detection\n7+ days          predictive maintenance\n>80 km/h         automatic storm protection\n\nEnergy that thinks with you.",
   team: "BUILDERS OF INTENT\n\nIvan Gorb         CEO\n                  Oil refinery operations, €20M+ assets\n\nVitaly Tenkov     CTO\n                  200+ solar installations, Scandinavia\n\nMarina Guseva     CDO\n                  10+ years SCADA, industrial IoT\n\nMariia Khodorkova COO\n                  Logistics, UN38.3 & CE certification\n\nOleksandr Sharov  Defence Advisor\n                  Ukraine combat engineer, EW specialist\n\nWe know infrastructure. Now we're giving it a heartbeat.",
-  production: "SCALING AUTONOMY\n\nPhase 1          M1–M4\n60 units         Certification batch, China\n                 Field validation across climate zones\n\nPhase 2          M24\n3,000 m²         Assembly facility, Germany\n250 units/month  Production capacity\n\nProprietary aluminum extrusion die — owned\nEU component alternatives — qualified\n\n25-year structural design life",
   market: "WHERE AUTONOMY MATTERS\n\nPrimary     EU — Germany, Poland, Balkans\nYear 3      MENA pilots, Nordic expansion\nYear 5      Full scale\n\nSEGMENTS\nTelecom towers         replacing diesel generators\nOil & Gas              pipeline and wellhead monitoring\nAgriculture            autonomous irrigation\nDefence                border security, forward bases\nConstruction           temporary site power\nEV Charging            remote locations\n\nTAM €500M+ extreme environments",
-  financials: "INVESTING IN EVOLUTION\n\n€2.5M Seed  ·  EIC €12.35M (€2.35M grant + €10M equity)\n\nY1 200 units €2.2M  ·  Y3 2,500 units €36M  ·  Y5 5,000 units €90M\n\nBreakeven M36  ·  Factory €3.5M  ·  Working capital €3M  ·  Team €2M\n\nStatic → Driven → Autonomous\nThe next stage of how things exist."
+  financials: "INVESTING IN EVOLUTION\n\n€2.5M Seed  ·  EIC €12.35M (€2.35M grant + €10M equity)\n\nY1 200 units €2.2M  ·  Y3 2,500 units €36M  ·  Y5 5,000 units €90M\n\nBreakeven M36  ·  Factory €3.5M  ·  Working capital €3M  ·  Team €2M\n\nStatic → Driven → Autonomous\nThe next stage of how things exist.",
+  implementation: "IMPLEMENTATION\n\nSeries A: €10M\nProduction facility in Germany\n5,000 m² · 3 assembly lines · 250 units/month\n\nMonth 36: Breakeven",
+  products: "HARDWARE DEEP DIVE\n\nBODY · 6063-T6 Aluminum · 3m · 175kg\nACCESS · Hermetic hatch · IP65 · Field-serviceable\nTHERMAL · Copper foam · Aerogel · Phase change\nWIND · Auto-positioning · 180° stealth fold · 200+ km/h\nINSTALLATION · Helical piles · No concrete · 3m² footprint",
+  lineup: "PRODUCTS\n\nHOME · €10,000–15,000 · Residential\nCONTINENTAL · €15,000–25,000 · -20°C to +45°C\nARCTIC EDITION · €25,000–35,000 · -50°C to +35°C\nDESERT SHIELD · €22,000–32,000 · -10°C to +60°C\n\nAll editions: 16–48 kWh storage · 4.32 kWp solar · iONEOS",
+  business: "BUSINESS MODEL\n\nEaaS — Energy as a Service\nInteractive financial model for investors\n\nCapex: €4,599 per station\nEaaS tariff: €1.0/kWh\nPayback: 24 months\nROI: 200%+ over 7-year contract\n\nCredit purchase vs EaaS vs Diesel comparison\nPortfolio valuation at 6x ARR",
+  partnership: "PARTNERSHIP PROGRAM\n\nGT GmbH Berlin invites technical professionals to manufacture and service autonomous solar power stations.\n\n1. LEGAL ENTITY · €200,000 paid-in capital · ProCredit Bank guarantee\n2. BANKING · All operations via ProCredit corporate account\n3. SUPPLY CHAIN · 30% prepayment · 180 days balance · Factoring available\n4. CONSUMER FINANCE · Partner Admin credit applications · Auto subsidy requests\n5. REVENUE MODEL · Buy at cost · Set retail price · 50/50 profit split\n6. TRANSPARENCY · Partner Admin tracking · Monthly auto-reports\n\nAccess to inverters, batteries, AI tools, legal docs, tech support.\n\nApply: 12 questions → Demo access in 24h",
+  contact: "CONTACT\n\nG.T. GmbH\nKlingsorstraße 105 b\n12203 Berlin\nDeutschland\n\nEmail: ione@gtmail.ai\nPhone: +49 30 41737300\n\nHRB: 257661 B\nUSt-IdNr.: DE365568840"
 };
 
 // Pre-cached audio files
@@ -44,10 +60,10 @@ const CACHED_AUDIO: Record<string, string> = {
   analyzing: '/audio/analyzing.mp3',
   back: '/audio/back.mp3',
   climate: '/audio/climate.mp3',
-  defence: '/audio/defence.mp3',
-  economics: '/audio/economics.mp3',
   tech: '/audio/tech.mp3',
   team: '/audio/team.mp3',
+  lineup: '/audio/lineup.mp3',
+  products: '/audio/products.mp3',
   production: '/audio/production.mp3',
   market: '/audio/market.mp3',
   financials: '/audio/financials.mp3',
@@ -60,13 +76,13 @@ type OrgFocus = 'DEEP_TECH' | 'CLIMATE' | 'DEFENCE' | 'ENERGY' | 'INDUSTRIAL' | 
 
 // Topic order by investor type
 const TOPIC_ORDER: Record<OrgType, string[]> = {
-  GRANT: ['climate', 'tech', 'economics', 'defence', 'market', 'team', 'production', 'financials'],
-  VC: ['economics', 'market', 'tech', 'production', 'climate', 'team', 'defence', 'financials'],
-  CVC: ['market', 'defence', 'economics', 'tech', 'production', 'team', 'climate', 'financials'],
-  FAMILY_OFFICE: ['economics', 'climate', 'market', 'production', 'tech', 'team', 'defence', 'financials'],
-  BANK: ['production', 'economics', 'market', 'team', 'tech', 'defence', 'climate', 'financials'],
-  STRATEGIC: ['defence', 'market', 'economics', 'tech', 'production', 'team', 'climate', 'financials'],
-  GOVERNMENT: ['climate', 'defence', 'market', 'production', 'team', 'economics', 'tech', 'financials'],
+  GRANT: ['climate', 'tech', 'lineup', 'products', 'business', 'partnership', 'contact'],
+  VC: ['lineup', 'products', 'business', 'tech', 'climate', 'partnership', 'contact'],
+  CVC: ['lineup', 'products', 'business', 'tech', 'climate', 'partnership', 'contact'],
+  FAMILY_OFFICE: ['lineup', 'products', 'business', 'climate', 'tech', 'partnership', 'contact'],
+  BANK: ['lineup', 'products', 'business', 'tech', 'climate', 'partnership', 'contact'],
+  STRATEGIC: ['lineup', 'products', 'business', 'tech', 'climate', 'partnership', 'contact'],
+  GOVERNMENT: ['climate', 'lineup', 'products', 'business', 'tech', 'partnership', 'contact'],
 };
 
 // Hero screen by focus
@@ -269,7 +285,7 @@ const ASK_CONTENT = {
     loan: 'Facility Construction Loan: €3,500,000',
     collateral: [
       { asset: 'Land', value: '€250,000' },
-      { asset: 'Building', value: '€2,750,000', note: '3,000 m²' },
+      { asset: 'Building', value: '€2,750,000', note: '5,000 m²' },
       { asset: 'Equipment', value: '€500,000' },
     ],
     note: 'Asset on balance sheet. Not rental expense.',
@@ -312,7 +328,7 @@ const ASK_CONTENT = {
       ]
     },
     volume: 'Volume: pricing on request (100+ units)',
-    contact: 'Contact: info@gt.gmbh'
+    contact: 'Contact: admin@gtmail.ai'
   },
 
   GOVERNMENT: {
@@ -338,7 +354,7 @@ const ASK_CONTENT = {
       'Regulation (EU) 2025/2653 compliant',
       'Dual-use — not weapons classification',
     ],
-    contact: 'Procurement contact: info@gt.gmbh'
+    contact: 'Procurement contact: admin@gtmail.ai'
   }
 };
 
@@ -366,21 +382,18 @@ const GREETING_TEMPLATES: Record<string, string> = {
   'GOVERNMENT_CLIMATE': "EU Green Deal alignment.\n105,000 tonnes CO₂ avoided at fleet scale.",
 };
 
-function buildGreeting(orgName: string, ceo: string | null, type: OrgType, focus: OrgFocus): string {
+function buildGreeting(type: OrgType, focus: OrgFocus): string {
   const key = `${type}_${focus}`;
   const template = GREETING_TEMPLATES[key] || GREETING_TEMPLATES[`VC_${focus}`] || GREETING_TEMPLATES['VC_DEEP_TECH'];
-
-  let greeting = `Welcome.\n\n${template}`;
-  if (ceo) {
-    greeting = `Welcome.\nRegards to ${ceo}.\n\n${template}`;
-  }
-  return greeting;
+  return `Welcome.\n\n${template}`;
 }
 
-type Stage = 'init' | 'present' | 'asking' | 'researching' | 'confirming' | 'hero' | 'topics' | 'presenting';
+type Stage = 'init' | 'present' | 'asking' | 'researching' | 'confirming' | 'hero' | 'hello' | 'topics' | 'presenting';
 
 export default function Home() {
-  const [stage, setStage] = useState<Stage>('init');
+  const [showLanding, setShowLanding] = useState(true);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const [stage, setStage] = useState<Stage>('present');
   const [input, setInput] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -389,14 +402,27 @@ export default function Home() {
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [viewedTopics, setViewedTopics] = useState<Set<string>>(new Set());
   const [voiceEnabled, setVoiceEnabled] = useState(false);
-  const [showVoicePrompt, setShowVoicePrompt] = useState(true);
+  const [showVoicePrompt, setShowVoicePrompt] = useState(false);
   const [glowIntensity, setGlowIntensity] = useState(0);
   const [presentPhase, setPresentPhase] = useState<'static' | 'driven'>('static');
+  const [audioFinished, setAudioFinished] = useState(false);
+
+  // Contact form state
+  const [showContactForm, setShowContactForm] = useState(false);
+  const [contactForm, setContactForm] = useState({ name: '', email: '', company: '', message: '' });
+  const [contactFile, setContactFile] = useState<File | null>(null);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formSubmitted, setFormSubmitted] = useState(false);
 
   // Organization classification from Gemini
   const [orgType, setOrgType] = useState<OrgType>('VC');
   const [orgFocus, setOrgFocus] = useState<OrgFocus>('DEEP_TECH');
-  const [orgInfo, setOrgInfo] = useState<{ name: string; ceo: string | null; thesis: string } | null>(null);
+  const [orgInfo, setOrgInfo] = useState<{ name: string; thesis: string } | null>(null);
+
+  // Q&A chat state
+  const [chatQuestion, setChatQuestion] = useState('');
+  const [chatAnswer, setChatAnswer] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -404,6 +430,39 @@ export default function Home() {
   const rafRef = useRef<number>(0);
   const textRafRef = useRef<number>(0);
   const currentTextRef = useRef<string>('');
+
+  // URL navigation: /home skips landing, #topic opens section directly
+  useEffect(() => {
+    const validTopics = TOPICS.map(t => t.id);
+
+    // /home → skip landing, show topics
+    if (window.location.pathname === '/home') {
+      setShowLanding(false);
+      setStage('topics');
+      setRobotText('Select a topic to explore.');
+      setDisplayedText('Select a topic to explore.');
+    }
+
+    const navigateFromHash = () => {
+      const hash = window.location.hash.replace('#', '');
+      const topSlug = hash.split('/')[0]; // handle "configurator/arctic" → "configurator"
+      const topicId = slugToId[topSlug] || slugToId[hash] || hash;
+      if (topicId && validTopics.includes(topicId)) {
+        setShowLanding(false);
+        setSelectedTopic(topicId);
+        setViewedTopics(p => new Set([...p, topicId]));
+        setStage('presenting');
+        setDisplayedText(TOPIC_TEXT[topicId] || '');
+        setAudioFinished(true);
+      } else if (!hash && stage === 'presenting') {
+        setStage('topics');
+        setSelectedTopic(null);
+      }
+    };
+    navigateFromHash();
+    window.addEventListener('popstate', navigateFromHash);
+    return () => window.removeEventListener('popstate', navigateFromHash);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const initAudioContext = useCallback(() => {
     if (audioCtxRef.current || !audioRef.current) return;
@@ -442,6 +501,22 @@ export default function Home() {
     setGlowIntensity(0);
   }, []);
 
+  // Skip landing page on pitchdeck subdomain
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hostname !== 'gtlab.org') {
+      setShowLanding(false);
+    }
+  }, []);
+
+  // Carousel rotation for landing page
+  useEffect(() => {
+    if (!showLanding) return;
+    const interval = setInterval(() => {
+      setCarouselIndex((prev) => (prev + 1) % 4);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [showLanding]);
+
   useEffect(() => {
     const audio = new Audio();
     audio.crossOrigin = 'anonymous';
@@ -463,6 +538,7 @@ export default function Home() {
 
     audio.onplay = () => {
       setIsSpeaking(true);
+      setAudioFinished(false);
       if (audioCtxRef.current?.state === 'suspended') {
         audioCtxRef.current.resume();
       }
@@ -472,6 +548,7 @@ export default function Home() {
 
     audio.onended = () => {
       setIsSpeaking(false);
+      setAudioFinished(true);
       stopVisualizer();
       if (textRafRef.current) {
         cancelAnimationFrame(textRafRef.current);
@@ -548,15 +625,17 @@ export default function Home() {
   };
 
   const goToHello1 = () => {
-    setStage('asking');
-    const greeting = "Hello.\n\nI'm iONE\nautonomous energy intelligence.\n\nWhich organization are you representing?";
+    setStage('hello');
+    const greeting = "Hello.\n\nI'm iONE\nautonomous energy intelligence.";
     setRobotText(greeting);
-    if (voiceEnabled) {
-      setDisplayedText('');
-      setTimeout(() => playAudio('/audio/greeting.mp3'), 300);
-    } else {
-      setDisplayedText(greeting);
-    }
+    setDisplayedText(greeting);
+    // After 3 seconds, go to topics
+    setTimeout(() => {
+      setStage('topics');
+      const topicsText = "Select a topic to explore.";
+      setRobotText(topicsText);
+      setDisplayedText(topicsText);
+    }, 3000);
   };
 
   const toggleVoice = () => {
@@ -576,7 +655,6 @@ export default function Home() {
     name: string;
     type: OrgType;
     focus: OrgFocus;
-    ceo: string | null;
     thesis: string;
   } | null>(null);
 
@@ -614,7 +692,7 @@ export default function Home() {
 
       // Handle UNCERTAIN status - ask for confirmation
       if (info.status === 'UNCERTAIN') {
-        setPendingInfo({ name: info.name, type, focus, ceo: info.ceo, thesis: info.thesis });
+        setPendingInfo({ name: info.name, type, focus, thesis: info.thesis });
         const confirmText = `We identified "${info.name}" as ${type.replace('_', ' ')}.\n\nIs this correct?`;
         setRobotText(confirmText);
         setDisplayedText(confirmText);
@@ -624,7 +702,7 @@ export default function Home() {
       }
 
       // OK status - proceed normally
-      proceedWithOrg(info.name, type, focus, info.ceo, info.thesis);
+      proceedWithOrg(info.name, type, focus, info.thesis);
 
     } catch {
       setOrgType('VC');
@@ -638,13 +716,14 @@ export default function Home() {
     }
   };
 
-  const proceedWithOrg = (name: string, type: OrgType, focus: OrgFocus, ceo: string | null, thesis: string) => {
+  const proceedWithOrg = (name: string, type: OrgType, focus: OrgFocus, thesis: string) => {
     setOrgType(type);
     setOrgFocus(focus);
-    setOrgInfo({ name, ceo, thesis });
+    setOrgInfo({ name, thesis });
+    setAudioFinished(false);
 
-    // Build personalized greeting
-    const greeting = buildGreeting(name, ceo, type, focus);
+    // Build greeting based on type×focus
+    const greeting = buildGreeting(type, focus);
 
     // Show hero screen
     setStage('hero');
@@ -654,12 +733,13 @@ export default function Home() {
       speak(greeting);
     } else {
       setDisplayedText(greeting);
+      setAudioFinished(true); // No audio = show button immediately
     }
   };
 
   const confirmOrg = () => {
     if (pendingInfo) {
-      proceedWithOrg(pendingInfo.name, pendingInfo.type, pendingInfo.focus, pendingInfo.ceo, pendingInfo.thesis);
+      proceedWithOrg(pendingInfo.name, pendingInfo.type, pendingInfo.focus, pendingInfo.thesis);
       setPendingInfo(null);
     }
   };
@@ -675,28 +755,65 @@ export default function Home() {
 
   const goToTopics = () => {
     setStage('topics');
+    setSelectedTopic(null);
     const text = "Select a topic to explore.";
     setRobotText(text);
     setDisplayedText(text);
+    const base = window.location.pathname.startsWith('/home') ? '/home' : '/';
+    window.history.replaceState(null, '', base);
   };
 
   const handleTopicClick = (id: string) => {
     setSelectedTopic(id);
     setViewedTopics(p => new Set([...p, id]));
     setStage('presenting');
+    window.history.replaceState(null, '', `/home#${idToSlug[id] || id}`);
+    setAudioFinished(false);
     const text = TOPIC_TEXT[id];
     setRobotText(text);
-    // Skip audio for 'tech' - TechDemo handles its own audio
-    if (voiceEnabled && id !== 'tech') {
+
+    // Skip audio for components that handle their own audio
+    const selfManagedAudio = id === 'tech' || id === 'implementation' || id === 'products' || id === 'lineup' || id === 'climate' || (id === 'financials' && ['GRANT', 'VC', 'CVC', 'FAMILY_OFFICE'].includes(orgType));
+
+    if (voiceEnabled && !selfManagedAudio) {
       setDisplayedText('');
       speakCached(id);
     } else {
       setDisplayedText(text);
+      setAudioFinished(true); // No audio from page = show button immediately
+    }
+  };
+
+  const handleAskQuestion = async () => {
+    if (!chatQuestion.trim() || chatLoading) return;
+
+    setChatLoading(true);
+    setChatAnswer('');
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: chatQuestion }),
+      });
+
+      const data = await response.json();
+
+      if (data.answer) {
+        setChatAnswer(data.answer);
+      } else if (data.error) {
+        setChatAnswer(data.error);
+      }
+    } catch (e) {
+      setChatAnswer('Failed to get answer. Please try again.');
+    } finally {
+      setChatLoading(false);
     }
   };
 
   const backToTopics = () => {
     setStage('topics');
+    setSelectedTopic(null);
     const text = "What else would you like to explore?";
     setRobotText(text);
     if (voiceEnabled) {
@@ -705,31 +822,175 @@ export default function Home() {
     } else {
       setDisplayedText(text);
     }
+    window.history.replaceState(null, '', '/home');
   };
 
   return (
-    <div className="min-h-screen bg-white flex relative overflow-hidden" style={{ fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }}>
+    <div className="h-screen bg-white flex relative overflow-hidden" style={{ fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }}>
 
-      {/* Background image for climate topic */}
+      {/* Landing Page */}
       <AnimatePresence>
-        {stage === 'presenting' && selectedTopic === 'climate' && (
+        {showLanding && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+            initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.5 }}
-            className="absolute inset-0 z-0"
+            className="fixed inset-0 bg-white z-[60]"
           >
-            <Image
-              src="/iceland.jpg"
-              alt="Iceland landscape"
-              fill
-              className="object-cover"
-              priority
-            />
+            {/* Image Carousel - background layer */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.6, delay: 0.4 }}
+              className="absolute inset-0 overflow-hidden z-0 flex items-center"
+              style={{ marginTop: '-500px' }}
+            >
+              <div
+                className="flex gap-16 opacity-50 animate-carousel"
+                style={{
+                  animation: 'carousel 60s linear infinite',
+                }}
+              >
+                {['/h1.png', '/h2.png', '/h3.png', '/h4.png', '/h1.png', '/h2.png', '/h3.png', '/h4.png'].map((src, index) => (
+                  <div key={index} className="flex-shrink-0" style={{ width: '1280px', height: '1600px', position: 'relative' }}>
+                    <img
+                      src={`${src}?v=20240218`}
+                      alt={`Product ${(index % 4) + 1}`}
+                      className="object-contain w-full h-full"
+                    />
+                  </div>
+                ))}
+              </div>
+              <style jsx>{`
+                @keyframes carousel {
+                  0% {
+                    transform: translateX(0);
+                  }
+                  100% {
+                    transform: translateX(calc(-1280px * 4 - 64px * 4));
+                  }
+                }
+              `}</style>
+            </motion.div>
+
+            {/* Content layer - on top */}
+            <div className="relative z-10 h-full flex flex-col items-center justify-center">
+              {/* Logo + Welcome Text */}
+              <motion.div
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6 }}
+                className="flex items-center gap-4 mb-8 mt-32"
+              >
+                <Image
+                  src="/SF.png"
+                  alt="GT GmbH Logo"
+                  width={60}
+                  height={60}
+                  className="object-contain opacity-60"
+                />
+                <p className="text-4xl sm:text-5xl text-zinc-600 tracking-wide" style={{ fontFamily: "'Bebas Neue', sans-serif", fontWeight: 400 }}>
+                  Welcome to GT GmbH !
+                </p>
+              </motion.div>
+
+              {/* Navigation */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.6 }}
+              className="flex items-center gap-8 sm:gap-12"
+              style={{ fontFamily: "'Bebas Neue', sans-serif" }}
+            >
+              <button
+                onClick={() => {
+                  setShowLanding(false);
+                  setStage('topics');
+                  setRobotText('Select a topic to explore.');
+                  setDisplayedText('Select a topic to explore.');
+                  window.history.pushState(null, '', '/home');
+                }}
+                className="text-zinc-600 hover:text-zinc-900 text-2xl sm:text-3xl tracking-wider transition-colors"
+              >
+                HOME
+              </button>
+              <span className="text-zinc-300 text-2xl sm:text-3xl">·</span>
+              <a
+                href="https://ione.store"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-zinc-600 hover:text-zinc-900 text-2xl sm:text-3xl tracking-wider transition-colors"
+              >
+                PRODUCTS
+              </a>
+              <span className="text-zinc-300 text-2xl sm:text-3xl">·</span>
+              <a
+                href="https://pitchdeck.gtlab.org"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-zinc-600 hover:text-zinc-900 text-2xl sm:text-3xl tracking-wider transition-colors"
+              >
+                INVESTORS
+              </a>
+            </motion.div>
+
+              {/* Footer */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.6, delay: 0.6 }}
+                className="absolute bottom-6 flex items-center gap-2 text-xs text-zinc-400 tracking-wider"
+              >
+                <Image
+                  src="/SF.png"
+                  alt="GT GmbH"
+                  width={14}
+                  height={14}
+                  className="object-contain opacity-50"
+                />
+                <span>GT GmbH · Berlin</span>
+              </motion.div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Background removed - ClimateImpact uses white background */}
+
+      {/* Home Section Carousel Background */}
+      {!showLanding && (stage === 'topics' || stage === 'hello') && (
+        <div
+          className="fixed inset-0 overflow-hidden z-0 flex items-center pointer-events-none"
+          style={{ marginTop: '-500px' }}
+        >
+          <div
+            className="flex gap-16 opacity-30"
+            style={{
+              animation: 'carousel-home 60s linear infinite',
+            }}
+          >
+            {['/h1.png', '/h2.png', '/h3.png', '/h4.png', '/h1.png', '/h2.png', '/h3.png', '/h4.png'].map((src, index) => (
+              <div key={index} className="flex-shrink-0" style={{ width: '1280px', height: '1600px', position: 'relative' }}>
+                <img
+                  src={`${src}?v=20240218`}
+                  alt={`Product ${(index % 4) + 1}`}
+                  className="object-contain w-full h-full"
+                />
+              </div>
+            ))}
+          </div>
+          <style jsx>{`
+            @keyframes carousel-home {
+              0% {
+                transform: translateX(0);
+              }
+              100% {
+                transform: translateX(calc(-1280px * 4 - 64px * 4));
+              }
+            }
+          `}</style>
+        </div>
+      )}
 
       {/* Tech topic - full screen demo */}
       <AnimatePresence>
@@ -737,6 +998,43 @@ export default function Home() {
           <TechDemo onBack={backToTopics} voiceEnabled={voiceEnabled} />
         )}
       </AnimatePresence>
+
+      {/* Hardware Deep Dive topic - full screen demo */}
+      <AnimatePresence>
+        {stage === 'presenting' && selectedTopic === 'products' && (
+          <HardwareDeepDive onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+        )}
+      </AnimatePresence>
+
+      {/* Products topic - station configurator with PVGIS */}
+      <AnimatePresence>
+        {stage === 'presenting' && selectedTopic === 'lineup' && (
+          <ProductsShowcase onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+        )}
+      </AnimatePresence>
+
+      {/* Partnership topic - full screen showcase */}
+      <AnimatePresence>
+        {stage === 'presenting' && selectedTopic === 'partnership' && (
+          <PartnershipShowcase onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+        )}
+      </AnimatePresence>
+
+      {/* Business Model topic - EaaS financial model */}
+      <AnimatePresence>
+        {stage === 'presenting' && selectedTopic === 'business' && (
+          <BusinessModel onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+        )}
+      </AnimatePresence>
+
+      {/* Contact topic - full screen showcase */}
+      <AnimatePresence>
+        {stage === 'presenting' && selectedTopic === 'contact' && (
+          <ContactShowcase onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+        )}
+      </AnimatePresence>
+
+      {/* Grant/VC/Implementation Impact - now rendered inline in left panel */}
 
       <AnimatePresence>
         {showVoicePrompt && (
@@ -922,45 +1220,28 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* Left side - Content (hidden when tech demo is active) */}
-      <div className={`flex-1 flex flex-col justify-center p-6 sm:p-12 lg:p-16 pr-4 sm:pr-8 relative z-10 ${stage === 'presenting' && selectedTopic === 'tech' ? 'hidden' : ''}`}>
+      {/* Left side - Content (hidden when full-screen demos are active) */}
+      <div className={`flex-1 flex flex-col p-6 sm:p-12 lg:p-16 pr-4 sm:pr-8 relative z-10 ${stage === 'topics' || stage === 'hello' ? 'justify-end pb-24 sm:pb-32' : 'justify-center'} ${stage === 'presenting' && (selectedTopic === 'tech' || selectedTopic === 'products' || selectedTopic === 'lineup' || selectedTopic === 'partnership' || selectedTopic === 'contact') ? 'hidden' : ''}`}>
         <div className="max-w-2xl">
           <div className="mb-8">
-            {/* Special layout for climate topic */}
+            {/* Climate Impact - 5 slides with voice sync */}
             {stage === 'presenting' && selectedTopic === 'climate' ? (
-              <div className="bg-black/50 backdrop-blur-sm p-8 sm:p-10 lg:p-12 space-y-6 w-fit">
-                <motion.h1
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.6 }}
-                  className="text-3xl sm:text-5xl lg:text-6xl font-bold text-white tracking-tight mb-8 whitespace-nowrap"
-                >
-                  {CLIMATE_DATA.title}
-                </motion.h1>
-                <div className="space-y-4">
-                  {CLIMATE_DATA.lines.map((line, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, x: -30 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ duration: 0.5, delay: 0.3 + i * 0.4 }}
-                      className="flex items-baseline gap-3 text-xl sm:text-2xl lg:text-3xl"
-                    >
-                      <span className="font-bold text-white whitespace-nowrap">{line.value}</span>
-                      <span className="text-white/80 font-light whitespace-nowrap">{line.text}</span>
-                    </motion.div>
-                  ))}
-                </div>
-              </div>
+              <ClimateImpact onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+            ) : stage === 'presenting' && selectedTopic === 'financials' && orgType === 'GRANT' ? (
+              /* === GRANT IMPACT - inline with white background === */
+              <GrantImpact onComplete={backToTopics} voiceEnabled={voiceEnabled} />
+            ) : stage === 'presenting' && selectedTopic === 'financials' && ['VC', 'CVC', 'FAMILY_OFFICE'].includes(orgType) ? (
+              /* === VC IMPACT - inline with white background === */
+              <VCImpact onComplete={backToTopics} voiceEnabled={voiceEnabled} focus={orgFocus} />
             ) : stage === 'presenting' && selectedTopic === 'financials' ? (
-              /* === FINANCIALS ASK SCREEN - ADAPTED BY ORG TYPE === */
+              /* === FINANCIALS ASK SCREEN - for BANK, STRATEGIC, GOVERNMENT === */
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className="bg-zinc-900 p-6 sm:p-8 lg:p-10 rounded-sm max-w-3xl"
               >
-                {/* GRANT Layout */}
-                {orgType === 'GRANT' && (
+                {/* BANK Layout */}
+                {orgType === 'BANK' && (
                   <>
                     <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white mb-6">{ASK_CONTENT.GRANT.title}</h2>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
@@ -1188,6 +1469,9 @@ export default function Home() {
                   </>
                 )}
               </motion.div>
+            ) : stage === 'presenting' && selectedTopic === 'implementation' ? (
+              /* === IMPLEMENTATION - inline with white background === */
+              <ImplementationImpact onComplete={backToTopics} voiceEnabled={voiceEnabled} />
             ) : (
               <p className="text-2xl sm:text-4xl text-zinc-800 whitespace-pre-line leading-relaxed font-light">
                 {robotText.split('').map((char, i) => (
@@ -1207,19 +1491,19 @@ export default function Home() {
             <div
               className={`w-full max-w-md mb-8 transition-opacity duration-500 ${displayedText === robotText ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
             >
-              <div className="flex items-center relative">
+              <div className="flex items-center relative group">
                 <input
                   type="text"
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSubmit()}
                   placeholder="Organization name..."
-                  className="flex-1 pl-6 pr-16 py-4 border border-zinc-300 text-lg bg-white focus:outline-none focus:border-zinc-500 rounded-full"
+                  className="flex-1 pl-6 pr-14 py-3 border border-zinc-400/50 text-base bg-transparent text-zinc-700 placeholder:text-zinc-400 focus:outline-none focus:border-zinc-500 rounded-full transition-all duration-300 backdrop-blur-sm"
                   disabled={stage === 'researching' || displayedText !== robotText}
                   autoFocus={displayedText === robotText}
                 />
-                <button onClick={handleSubmit} disabled={stage === 'researching' || !input.trim()} className="absolute right-1 w-12 h-12 bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-30 rounded-full flex items-center justify-center">
-                  <Send size={20} />
+                <button onClick={handleSubmit} disabled={stage === 'researching' || !input.trim()} className="absolute right-2 w-9 h-9 border border-zinc-400/50 text-zinc-500 hover:text-zinc-700 hover:border-zinc-500 disabled:opacity-30 rounded-full flex items-center justify-center transition-all duration-300 bg-transparent">
+                  <Send size={16} />
                 </button>
               </div>
             </div>
@@ -1275,21 +1559,47 @@ export default function Home() {
                   </div>
                 </motion.div>
 
-                {/* Continue button */}
-                <motion.button
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.6 }}
-                  onClick={goToTopics}
-                  className="px-8 py-4 bg-zinc-800 text-white text-sm tracking-wide hover:bg-zinc-700 transition-colors rounded-sm"
-                >
-                  Explore topics →
-                </motion.button>
+                {/* Continue button - appears after audio finishes */}
+                <AnimatePresence>
+                  {audioFinished && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{
+                        opacity: 1,
+                        scale: 1,
+                        boxShadow: [
+                          '0 0 0 0 rgba(6, 182, 212, 0)',
+                          '0 0 20px 4px rgba(6, 182, 212, 0.6)',
+                          '0 0 0 0 rgba(6, 182, 212, 0)'
+                        ]
+                      }}
+                      transition={{
+                        opacity: { duration: 0.3 },
+                        scale: { duration: 0.3 },
+                        boxShadow: { duration: 1.5, repeat: Infinity, ease: 'easeInOut' }
+                      }}
+                      onClick={goToTopics}
+                      className="px-8 py-4 bg-zinc-800 text-white text-sm tracking-wide hover:bg-zinc-700 transition-colors rounded-sm"
+                    >
+                      Explore topics →
+                    </motion.button>
+                  )}
+                </AnimatePresence>
               </motion.div>
             )}
 
             {stage === 'topics' && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-2xl">
+                <button
+                  onClick={() => {
+                    setShowLanding(true);
+                    setStage('topics');
+                    window.history.replaceState(null, '', '/');
+                  }}
+                  className="mb-4 text-zinc-400 hover:text-zinc-700 text-xs tracking-widest transition-colors flex items-center gap-1"
+                >
+                  ← GTLAB.ORG
+                </button>
                 <div className="grid grid-cols-2 gap-3 sm:gap-4">
                   {/* Sort topics based on orgType */}
                   {TOPIC_ORDER[orgType].map((topicId, i) => {
@@ -1300,10 +1610,10 @@ export default function Home() {
                       <motion.button
                         key={t.id}
                         initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.03 }}
+                        animate={{ opacity: viewed ? 0.5 : 1, y: 0 }}
+                        transition={{ delay: i * 0.05, duration: 0.3 }}
                         onClick={() => handleTopicClick(t.id)}
-                        className={`h-[72px] sm:h-[84px] flex items-center justify-center transition-all duration-300 rounded-sm border-2 border-transparent ${viewed ? 'opacity-50' : ''} hover:shadow-[0_0_15px_rgba(10,191,188,0.6)]`}
+                        className={`h-[72px] sm:h-[84px] flex items-center justify-center rounded-sm border-2 border-transparent hover:shadow-[0_0_15px_rgba(6,182,212,0.6)] transition-all duration-300`}
                         style={{ backgroundColor: '#2D3436' }}
                       >
                         <span className="text-white font-bold text-xs sm:text-sm tracking-wider">{t.title}</span>
@@ -1312,33 +1622,91 @@ export default function Home() {
                   })}
                 </div>
 
+                {/* Q&A Section */}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="mt-8"
+                >
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="text"
+                      value={chatQuestion}
+                      onChange={(e) => setChatQuestion(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAskQuestion()}
+                      placeholder="Ask iONE..."
+                      className="flex-1 px-5 py-2.5 bg-transparent text-zinc-900 text-sm rounded-full border border-zinc-500 placeholder:text-zinc-500 focus:border-zinc-700 focus:outline-none transition-all duration-300"
+                      disabled={chatLoading}
+                    />
+                    <button
+                      onClick={handleAskQuestion}
+                      disabled={chatLoading || !chatQuestion.trim()}
+                      className="w-10 h-10 border-2 border-zinc-900 hover:bg-zinc-900 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed text-zinc-900 rounded-full transition-all duration-300 flex items-center justify-center"
+                    >
+                      {chatLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                  {chatAnswer && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mt-4 px-5 py-4 rounded-2xl border border-zinc-300 bg-zinc-100"
+                    >
+                      <p className="text-zinc-800 text-sm whitespace-pre-wrap leading-relaxed">{chatAnswer}</p>
+                    </motion.div>
+                  )}
+                </motion.div>
+
                 {viewedTopics.size >= 3 && (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-8">
-                    <a href="mailto:ivan@gtlab.org?subject=iONE%20Pitch%20Deck%20Inquiry" className="inline-block px-6 sm:px-8 py-3 sm:py-4 bg-zinc-900 text-white text-xs sm:text-sm tracking-wide hover:bg-zinc-800 transition-colors rounded-sm">
-                      Schedule a call with Ivan
-                    </a>
+                    <button
+                      onClick={() => setShowContactForm(true)}
+                      className="inline-block px-6 sm:px-8 py-3 sm:py-4 bg-zinc-900 text-white text-xs sm:text-sm tracking-wide hover:bg-zinc-800 transition-colors rounded-sm"
+                    >
+                      Contact Us
+                    </button>
                   </motion.div>
                 )}
               </motion.div>
             )}
 
-            {stage === 'presenting' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-6 sm:mt-8">
-                <button
+            {stage === 'presenting' && audioFinished && !['products', 'tech', 'lineup', 'climate', 'financials', 'implementation'].includes(selectedTopic || '') && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{
+                  opacity: 1,
+                  y: 0,
+                }}
+                className="mt-6 sm:mt-8"
+              >
+                <motion.button
+                  animate={{
+                    boxShadow: [
+                      '0 0 0 0 rgba(6, 182, 212, 0)',
+                      '0 0 15px 3px rgba(6, 182, 212, 0.5)',
+                      '0 0 0 0 rgba(6, 182, 212, 0)'
+                    ]
+                  }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
                   onClick={backToTopics}
-                  className={`text-sm ${selectedTopic === 'climate' ? 'text-white/70 hover:text-white' : 'text-zinc-500 hover:text-zinc-800'}`}
+                  className={`text-sm px-4 py-2 rounded-full ${selectedTopic === 'climate' ? 'text-white/90 bg-white/10 hover:bg-white/20' : 'text-zinc-600 bg-zinc-100 hover:bg-zinc-200'}`}
                 >
-                  ← Back
-                </button>
+                  ← Back to topics
+                </motion.button>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
       </div>
 
-      {/* Right side - Robot image (hidden when tech demo is active) */}
+      {/* Right side - Robot image (hidden when full-screen demos are active) */}
       <div
-        className={`hidden sm:flex w-[45%] lg:w-[50%] items-end justify-end pb-10 pt-[calc(100vh/4*0.66)] pr-4 ${isSpeaking && glowIntensity === 0 ? 'animate-glow' : ''} ${stage === 'presenting' && selectedTopic === 'tech' ? '!hidden' : ''}`}
+        className={`hidden sm:flex w-[45%] lg:w-[50%] items-end justify-end pb-10 pt-[calc(100vh/4*0.66)] pr-4 z-10 ${isSpeaking && glowIntensity === 0 ? 'animate-glow' : ''} ${stage === 'presenting' && ['tech', 'products', 'lineup', 'climate', 'financials', 'partnership'].includes(selectedTopic || '') ? '!hidden' : ''}`}
         style={{
           filter: glowIntensity > 0
             ? `drop-shadow(0 0 ${20 + glowIntensity * 80}px rgba(6, 182, 212, ${0.3 + glowIntensity * 0.7}))`
@@ -1366,7 +1734,7 @@ export default function Home() {
 
       {/* Mobile robot - show smaller version */}
       <div
-        className={`sm:hidden fixed bottom-16 right-4 w-24 h-24 ${isSpeaking && glowIntensity === 0 ? 'animate-glow-mobile' : ''}`}
+        className={`sm:hidden fixed bottom-16 right-4 w-24 h-24 ${isSpeaking && glowIntensity === 0 ? 'animate-glow-mobile' : ''} ${stage === 'presenting' && ['tech', 'products', 'lineup', 'climate', 'financials', 'partnership'].includes(selectedTopic || '') ? '!hidden' : ''}`}
         style={{
           filter: glowIntensity > 0
             ? `drop-shadow(0 0 ${10 + glowIntensity * 40}px rgba(6, 182, 212, ${0.3 + glowIntensity * 0.7}))`
@@ -1392,7 +1760,214 @@ export default function Home() {
         </button>
       )}
 
-      <div className="absolute bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 text-[10px] sm:text-xs text-zinc-400 tracking-wider">GT GmbH · Berlin</div>
+      <div className="absolute bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 text-[10px] sm:text-xs text-zinc-400 tracking-wider">
+        <Image
+          src="/SF.png"
+          alt="GT GmbH"
+          width={14}
+          height={14}
+          className="object-contain opacity-50"
+        />
+        <span>GT GmbH · Berlin</span>
+      </div>
+
+      {/* Contact Form Modal */}
+      <AnimatePresence>
+        {showContactForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowContactForm(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-zinc-900 border border-zinc-700 rounded-lg p-6 sm:p-8 w-full max-w-md"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {formSubmitted ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                    <svg className="w-8 h-8 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <h3 className="text-xl font-bold text-white mb-2">Thank you!</h3>
+                  <p className="text-zinc-400 mb-6">We&apos;ll get back to you shortly.</p>
+                  <button
+                    onClick={() => {
+                      setShowContactForm(false);
+                      setFormSubmitted(false);
+                      setContactForm({ name: '', email: '', company: '', message: '' });
+                      setContactFile(null);
+                    }}
+                    className="px-6 py-2 bg-zinc-800 text-white rounded hover:bg-zinc-700 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-xl font-bold text-white">Contact Us</h3>
+                    <button
+                      onClick={() => setShowContactForm(false)}
+                      className="text-zinc-400 hover:text-white transition-colors"
+                    >
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setFormSubmitting(true);
+
+                      // Send to backend API using FormData
+                      try {
+                        const formData = new FormData();
+                        formData.append('name', contactForm.name);
+                        formData.append('email', contactForm.email);
+                        formData.append('company', contactForm.company);
+                        formData.append('message', contactForm.message);
+                        formData.append('orgType', orgType);
+                        formData.append('orgFocus', orgFocus);
+                        formData.append('orgName', orgInfo?.name || 'Unknown');
+                        if (contactFile) {
+                          formData.append('file', contactFile);
+                        }
+
+                        await fetch('/api/contact', {
+                          method: 'POST',
+                          body: formData
+                        });
+                      } catch (err) {
+                        console.error('Failed to send contact form:', err);
+                      }
+
+                      setFormSubmitting(false);
+                      setFormSubmitted(true);
+                    }}
+                    className="space-y-4"
+                  >
+                    <div>
+                      <label className="block text-zinc-400 text-sm mb-1">Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={contactForm.name}
+                        onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })}
+                        className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                        placeholder="Your name"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-zinc-400 text-sm mb-1">Email *</label>
+                      <input
+                        type="email"
+                        required
+                        value={contactForm.email}
+                        onChange={(e) => setContactForm({ ...contactForm, email: e.target.value })}
+                        className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                        placeholder="your@email.com"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-zinc-400 text-sm mb-1">Company</label>
+                      <input
+                        type="text"
+                        value={contactForm.company}
+                        onChange={(e) => setContactForm({ ...contactForm, company: e.target.value })}
+                        className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                        placeholder="Your company"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-zinc-400 text-sm mb-1">Message *</label>
+                      <textarea
+                        required
+                        rows={4}
+                        value={contactForm.message}
+                        onChange={(e) => setContactForm({ ...contactForm, message: e.target.value })}
+                        className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
+                        placeholder="How can we help you?"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-zinc-400 text-sm mb-1">Attach Document</label>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg"
+                          onChange={(e) => setContactFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="contact-file"
+                        />
+                        <label
+                          htmlFor="contact-file"
+                          className="flex items-center gap-3 w-full px-4 py-3 bg-zinc-800 border border-zinc-700 border-dashed rounded text-zinc-400 cursor-pointer hover:border-cyan-500 hover:text-zinc-300 transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                          </svg>
+                          {contactFile ? (
+                            <span className="text-cyan-400 truncate">{contactFile.name}</span>
+                          ) : (
+                            <span>Click to attach file (PDF, DOC, XLS, PPT...)</span>
+                          )}
+                        </label>
+                        {contactFile && (
+                          <button
+                            type="button"
+                            onClick={() => setContactFile(null)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-red-400 transition-colors"
+                          >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-1">Max 10 MB</p>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={formSubmitting}
+                      className="w-full py-3 bg-cyan-600 text-white font-semibold rounded hover:bg-cyan-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {formSubmitting ? (
+                        <>
+                          <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Sending...
+                        </>
+                      ) : (
+                        'Send Message'
+                      )}
+                    </button>
+                  </form>
+
+                  <p className="mt-4 text-xs text-zinc-500 text-center">
+                    Or email us directly at <a href="mailto:admin@gtmail.ai" className="text-cyan-400 hover:underline">admin@gtmail.ai</a>
+                  </p>
+                </>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

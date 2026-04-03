@@ -167,20 +167,29 @@
       inset:0;
       padding:58px 0 0 0;
     }
+    .mapBg{
+      position:absolute;
+      inset:0;
+      background: url('/map-bg.jpg') center center / cover no-repeat;
+      opacity: 0.6;
+      z-index:0;
+    }
     canvas#mapCanvas{
       width:100%;
       height:100%;
       display:block;
+      position:relative;
+      z-index:1;
     }
 
-    /* AION ingress node - positioned in GERMANY (new projection) */
-    /* For bounds lat -5 to 75, lng -25 to 70: Germany (51°N, 10°E) =
-       x: (10-(-25))/(70-(-25)) = 35/95 ≈ 37%
-       y: (75-51)/(75-(-5)) = 24/80 = 30% */
+    /* AION ingress node - positioned in GERMANY
+       For bounds lat 0 to 78, lng -30 to 85: Germany (51°N, 10°E) =
+       x: (10-(-30))/(85-(-30)) = 40/115 ≈ 34.8%
+       y: (78-51)/(78-0) = 27/78 ≈ 34.6% + offset for mapWrap padding */
     .ingress{
       position:absolute;
-      left:40%;
-      top:32%;
+      left:34.8%;
+      top:38%;
       transform:translate(-50%,-50%);
       width:86px;height:86px;
       border-radius:50%;
@@ -232,7 +241,8 @@
       display:flex;
       flex-direction:column;
       gap:14px;
-      overflow:hidden;
+      overflow-y:auto;
+      overflow-x:hidden;
     }
 
     .panel{
@@ -240,10 +250,11 @@
       border-radius:18px;
       background:rgba(16,16,34,.55);
       box-shadow: var(--shadow);
-      overflow:hidden;
+      overflow:visible;
       opacity:0;
       transform: translateY(8px);
       transition: opacity .6s ease, transform .6s ease;
+      flex-shrink:0;
     }
     .panel.on{
       opacity:1;
@@ -583,7 +594,7 @@
       <div class="mapCard" id="mapCard">
         <div class="mapTop">
           <div class="mapLabel">
-            <span class="tag">WORLD FLEET MAP · 50 iONE UNITS</span>
+            <span class="tag">WORLD FLEET MAP · 97 iONE UNITS</span>
             <span class="tag" id="mapHint">initializing…</span>
           </div>
           <div class="legend">
@@ -597,6 +608,7 @@
         <div class="mapGlow" id="mapGlow"></div>
 
         <div class="mapWrap">
+          <div class="mapBg"></div>
           <canvas id="mapCanvas" width="1280" height="760"></canvas>
         </div>
 
@@ -635,7 +647,7 @@
           <div class="grid2">
             <div class="kv">
               <div class="k">Stations Online</div>
-              <div class="v"><b id="online">47</b> / 50</div>
+              <div class="v"><b id="online">94</b> / 97</div>
             </div>
             <div class="kv">
               <div class="k">Data Points / Hour</div>
@@ -690,7 +702,7 @@
 
     <footer>
       <div class="footerLine" id="footerLine">
-        <span>FLEET: <b>50</b> units</span>
+        <span>FLEET: <b>97</b> units</span>
         <span class="sep">│</span>
         <span>ONLINE: <b id="fOnline">47</b></span>
         <span class="sep">│</span>
@@ -743,16 +755,41 @@
       { id: "iONE-003", lat: 50.11, lng: 8.68, location: "Frankfurt, DE", status: "nominal" },
       { id: "iONE-004", lat: 53.55, lng: 9.99, location: "Hamburg, DE", status: "nominal" },
 
-      // Western Europe
+      // Portugal
+      { id: "iONE-051", lat: 38.72, lng: -9.14, location: "Lisbon, PT", status: "nominal" },
+      { id: "iONE-052", lat: 41.16, lng: -8.63, location: "Porto, PT", status: "nominal" },
+
+      // Spain
+      { id: "iONE-009", lat: 40.42, lng: -3.70, location: "Madrid, ES", status: "nominal" },
+      { id: "iONE-053", lat: 41.39, lng: 2.17, location: "Barcelona, ES", status: "nominal" },
+      { id: "iONE-054", lat: 37.39, lng: -5.98, location: "Seville, ES", status: "nominal" },
+      { id: "iONE-055", lat: 39.47, lng: -0.38, location: "Valencia, ES", status: "nominal" },
+      { id: "iONE-056", lat: 43.26, lng: -2.93, location: "Bilbao, ES", status: "nominal" },
+
+      // France
       { id: "iONE-005", lat: 48.85, lng: 2.35, location: "Paris, FR", status: "nominal" },
+      { id: "iONE-057", lat: 45.76, lng: 4.83, location: "Lyon, FR", status: "nominal" },
+      { id: "iONE-058", lat: 43.30, lng: 5.37, location: "Marseille, FR", status: "nominal" },
+      { id: "iONE-059", lat: 43.60, lng: 1.44, location: "Toulouse, FR", status: "nominal" },
+      { id: "iONE-060", lat: 43.71, lng: 7.26, location: "Nice, FR", status: "nominal" },
+
+      // UK & Benelux
       { id: "iONE-006", lat: 51.51, lng: -0.13, location: "London, UK", status: "nominal" },
       { id: "iONE-007", lat: 52.37, lng: 4.90, location: "Amsterdam, NL", status: "nominal" },
       { id: "iONE-008", lat: 50.85, lng: 4.35, location: "Brussels, BE", status: "nominal" },
-      { id: "iONE-009", lat: 40.42, lng: -3.70, location: "Madrid, ES", status: "nominal" },
-      { id: "iONE-010", lat: 41.90, lng: 12.50, location: "Rome, IT", status: "nominal" },
 
-      // Nordic / Arctic
-      { id: "iONE-011", lat: 78.22, lng: 15.63, location: "Svalbard, NO", status: "nominal" },
+      // Italy
+      { id: "iONE-010", lat: 41.90, lng: 12.50, location: "Rome, IT", status: "nominal" },
+      { id: "iONE-061", lat: 45.46, lng: 9.19, location: "Milan, IT", status: "nominal" },
+      { id: "iONE-062", lat: 40.85, lng: 14.27, location: "Naples, IT", status: "nominal" },
+      { id: "iONE-063", lat: 43.77, lng: 11.25, location: "Florence, IT", status: "nominal" },
+      { id: "iONE-064", lat: 45.44, lng: 12.32, location: "Venice, IT", status: "nominal" },
+      { id: "iONE-065", lat: 38.12, lng: 13.36, location: "Palermo, IT", status: "nominal" },
+
+      // Malta
+      { id: "iONE-066", lat: 35.90, lng: 14.51, location: "Valletta, MT", status: "nominal" },
+
+      // Nordic
       { id: "iONE-012", lat: 71.17, lng: 25.78, location: "Vardø, NO", status: "nominal" },
       { id: "iONE-013", lat: 69.65, lng: 18.96, location: "Tromsø, NO", status: "nominal" },
       { id: "iONE-014", lat: 64.13, lng: -21.90, location: "Reykjavik, IS", status: "nominal" },
@@ -763,51 +800,89 @@
       { id: "iONE-019", lat: 66.50, lng: 25.73, location: "Rovaniemi, FI", status: "nominal" },
       { id: "iONE-020", lat: 55.68, lng: 12.57, location: "Copenhagen, DK", status: "nominal" },
 
-      // Central/Eastern Europe
+      // Central Europe
       { id: "iONE-021", lat: 52.23, lng: 21.01, location: "Warsaw, PL", status: "nominal" },
       { id: "iONE-022", lat: 50.08, lng: 14.44, location: "Prague, CZ", status: "nominal" },
       { id: "iONE-023", lat: 48.21, lng: 16.37, location: "Vienna, AT", status: "nominal" },
       { id: "iONE-024", lat: 47.50, lng: 19.04, location: "Budapest, HU", status: "nominal" },
+      { id: "iONE-067", lat: 48.15, lng: 17.11, location: "Bratislava, SK", status: "nominal" },
+      { id: "iONE-068", lat: 46.06, lng: 14.51, location: "Ljubljana, SI", status: "nominal" },
+      { id: "iONE-069", lat: 45.81, lng: 15.98, location: "Zagreb, HR", status: "nominal" },
 
       // Balkans
       { id: "iONE-025", lat: 44.43, lng: 26.10, location: "Bucharest, RO", status: "nominal" },
       { id: "iONE-026", lat: 42.70, lng: 23.32, location: "Sofia, BG", status: "nominal" },
       { id: "iONE-027", lat: 44.82, lng: 20.46, location: "Belgrade, RS", status: "nominal" },
+      { id: "iONE-070", lat: 43.86, lng: 18.41, location: "Sarajevo, BA", status: "nominal" },
+      { id: "iONE-071", lat: 42.44, lng: 19.26, location: "Podgorica, ME", status: "nominal" },
+      { id: "iONE-072", lat: 41.33, lng: 19.82, location: "Tirana, AL", status: "nominal" },
+      { id: "iONE-073", lat: 41.99, lng: 21.43, location: "Skopje, MK", status: "nominal" },
+
+      // Greece & Islands
       { id: "iONE-028", lat: 37.98, lng: 23.73, location: "Athens, GR", status: "nominal" },
+      { id: "iONE-074", lat: 40.64, lng: 22.94, location: "Thessaloniki, GR", status: "nominal" },
+      { id: "iONE-075", lat: 35.34, lng: 25.13, location: "Heraklion, GR", status: "nominal" },
+      { id: "iONE-076", lat: 36.43, lng: 28.22, location: "Rhodes, GR", status: "nominal" },
+      { id: "iONE-077", lat: 39.62, lng: 19.92, location: "Corfu, GR", status: "nominal" },
+
+      // Cyprus
+      { id: "iONE-078", lat: 35.19, lng: 33.38, location: "Nicosia, CY", status: "nominal" },
+      { id: "iONE-079", lat: 34.68, lng: 33.04, location: "Limassol, CY", status: "nominal" },
 
       // Turkey
       { id: "iONE-029", lat: 41.01, lng: 28.98, location: "Istanbul, TR", status: "nominal" },
       { id: "iONE-030", lat: 39.93, lng: 32.86, location: "Ankara, TR", status: "nominal" },
+      { id: "iONE-080", lat: 38.42, lng: 27.14, location: "Izmir, TR", status: "nominal" },
+      { id: "iONE-081", lat: 36.90, lng: 30.71, location: "Antalya, TR", status: "nominal" },
+      { id: "iONE-082", lat: 40.18, lng: 29.06, location: "Bursa, TR", status: "nominal" },
+      { id: "iONE-083", lat: 37.00, lng: 35.32, location: "Adana, TR", status: "nominal" },
 
       // MENA - Gulf
       { id: "iONE-031", lat: 25.28, lng: 55.30, location: "Dubai, UAE", status: "nominal" },
       { id: "iONE-032", lat: 24.47, lng: 54.37, location: "Abu Dhabi, UAE", status: "nominal" },
-      { id: "iONE-033", lat: 24.71, lng: 46.68, location: "Riyadh, SA", status: "warning" },
+      { id: "iONE-033", lat: 24.71, lng: 46.68, location: "Riyadh, SA", status: "nominal" },
       { id: "iONE-034", lat: 28.38, lng: 36.58, location: "NEOM, SA", status: "nominal" },
       { id: "iONE-035", lat: 25.29, lng: 51.53, location: "Doha, QA", status: "nominal" },
       { id: "iONE-036", lat: 26.22, lng: 50.59, location: "Manama, BH", status: "nominal" },
       { id: "iONE-037", lat: 29.38, lng: 47.99, location: "Kuwait City, KW", status: "nominal" },
       { id: "iONE-038", lat: 23.61, lng: 58.59, location: "Muscat, OM", status: "nominal" },
+      { id: "iONE-084", lat: 21.49, lng: 39.19, location: "Jeddah, SA", status: "nominal" },
+      { id: "iONE-085", lat: 26.43, lng: 50.10, location: "Dammam, SA", status: "nominal" },
+      { id: "iONE-086", lat: 24.47, lng: 39.61, location: "Medina, SA", status: "nominal" },
 
       // MENA - Levant & Egypt
       { id: "iONE-039", lat: 33.89, lng: 35.50, location: "Beirut, LB", status: "nominal" },
       { id: "iONE-040", lat: 31.95, lng: 35.93, location: "Amman, JO", status: "nominal" },
+      { id: "iONE-087", lat: 29.53, lng: 35.01, location: "Aqaba, JO", status: "nominal" },
       { id: "iONE-041", lat: 30.04, lng: 31.24, location: "Cairo, EG", status: "nominal" },
+      { id: "iONE-088", lat: 31.20, lng: 29.92, location: "Alexandria, EG", status: "nominal" },
+      { id: "iONE-089", lat: 25.69, lng: 32.64, location: "Luxor, EG", status: "nominal" },
+      { id: "iONE-090", lat: 27.26, lng: 33.81, location: "Hurghada, EG", status: "nominal" },
 
       // North Africa
       { id: "iONE-042", lat: 33.59, lng: -7.62, location: "Casablanca, MA", status: "nominal" },
+      { id: "iONE-091", lat: 34.02, lng: -6.83, location: "Rabat, MA", status: "nominal" },
+      { id: "iONE-092", lat: 31.63, lng: -8.01, location: "Marrakech, MA", status: "nominal" },
       { id: "iONE-043", lat: 36.75, lng: 3.06, location: "Algiers, DZ", status: "nominal" },
+      { id: "iONE-093", lat: 36.37, lng: 6.61, location: "Constantine, DZ", status: "nominal" },
       { id: "iONE-044", lat: 36.81, lng: 10.18, location: "Tunis, TN", status: "nominal" },
       { id: "iONE-045", lat: 32.90, lng: 13.19, location: "Tripoli, LY", status: "nominal" },
+      { id: "iONE-094", lat: 32.12, lng: 20.07, location: "Benghazi, LY", status: "nominal" },
 
-      // Offshore / Industrial
-      { id: "iONE-046", lat: 62.03, lng: 6.77, location: "North Sea Platform", status: "warning" },
-      { id: "iONE-047", lat: 57.05, lng: 1.50, location: "Brent Field, UK", status: "nominal" },
-      { id: "iONE-048", lat: 56.00, lng: 3.50, location: "Ekofisk, NO", status: "nominal" },
-
-      // Baltics & Eastern
+      // Baltics
       { id: "iONE-049", lat: 59.44, lng: 24.75, location: "Tallinn, EE", status: "nominal" },
       { id: "iONE-050", lat: 56.95, lng: 24.11, location: "Riga, LV", status: "nominal" },
+      { id: "iONE-095", lat: 54.69, lng: 25.28, location: "Vilnius, LT", status: "nominal" },
+
+      // Kazakhstan
+      { id: "iONE-096", lat: 43.24, lng: 76.95, location: "Almaty, KZ", status: "nominal" },
+      { id: "iONE-097", lat: 51.17, lng: 71.45, location: "Astana, KZ", status: "nominal" },
+      { id: "iONE-098", lat: 43.65, lng: 51.16, location: "Aktau, KZ", status: "nominal" },
+      { id: "iONE-099", lat: 46.88, lng: 51.88, location: "Atyrau, KZ", status: "nominal" },
+
+      // Caucasus
+      { id: "iONE-100", lat: 41.69, lng: 44.83, location: "Tbilisi, GE", status: "nominal" },
+      { id: "iONE-101", lat: 40.41, lng: 49.87, location: "Baku, AZ", status: "nominal" },
     ];
 
     const telemetryParams = [
@@ -908,8 +983,8 @@
     }
 
     // Focused projection on Europe, Nordic, MENA region
-    // Bounds: lat 0° to 75°, lng -20° to 65°
-    const MAP_BOUNDS = { minLat: -5, maxLat: 75, minLng: -25, maxLng: 70 };
+    // Adjusted to match map-bg.jpg background image
+    const MAP_BOUNDS = { minLat: 0, maxLat: 78, minLng: -30, maxLng: 85 };
 
     function project(lat, lng, w, h){
       const x = (lng - MAP_BOUNDS.minLng) / (MAP_BOUNDS.maxLng - MAP_BOUNDS.minLng) * w;
@@ -917,14 +992,14 @@
       return {x, y};
     }
 
-    // Draw simplified world map contours
+    // Draw map overlay (grid and vignette only - continents are now background image)
     function drawWorldBase(w,h){
       ctx.clearRect(0,0,w,h);
 
       // subtle grid
       ctx.save();
-      ctx.globalAlpha = 0.20;
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.globalAlpha = 0.15;
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
       ctx.lineWidth = 1;
       const stepX = Math.max(90, w/8);
       const stepY = Math.max(70, h/6);
@@ -936,153 +1011,11 @@
       }
       ctx.restore();
 
-      // Detailed continent contours for Europe, Nordic, MENA focus (lng, lat)
-      const continents = {
-        // Iberian Peninsula (Spain & Portugal)
-        iberia: [
-          [-9.5, 37], [-9, 38.7], [-8.5, 41.8], [-9, 42], [-8, 43.5], [-4, 43.5],
-          [-2, 43.3], [0, 42.7], [3.2, 42.4], [3.3, 41.5], [0.5, 40.5], [0, 39],
-          [-0.5, 38], [-1.5, 37.5], [-5, 36.2], [-5.5, 36], [-7.5, 37], [-9.5, 37]
-        ],
-        // France
-        france: [
-          [-4, 48.5], [-1.5, 48.6], [2, 51], [2.5, 51], [4, 50], [4.2, 49.5],
-          [8, 49], [7.5, 47.5], [7, 47], [6.5, 46.3], [6, 46.2], [7, 44],
-          [6.5, 43.5], [3.5, 43.2], [3, 42.5], [0, 42.7], [-2, 43.3], [-4, 43.5],
-          [-4.5, 48], [-4, 48.5]
-        ],
-        // British Isles - Great Britain
-        britain: [
-          [-5.5, 50], [-5, 50.5], [-4, 50.3], [-3, 50.7], [-1, 50.8], [1.3, 51.1],
-          [1.7, 52], [1.2, 52.8], [0.5, 53], [0, 53.5], [-0.5, 54], [-1.5, 54.5],
-          [-3, 54.6], [-3.5, 55], [-4.5, 55.5], [-5, 55.8], [-5.5, 57.5], [-5, 58.5],
-          [-3, 58.6], [-2, 57.7], [-1.5, 57], [-2, 56.5], [-3.5, 56], [-4.5, 55],
-          [-5, 54.5], [-4.5, 54], [-3.5, 53.5], [-3, 53], [-3, 52], [-5, 51.5],
-          [-5.5, 50]
-        ],
-        // Ireland
-        ireland: [
-          [-10, 51.5], [-10.5, 52], [-10.3, 53.5], [-9.5, 54], [-8.5, 55], [-7.5, 55.3],
-          [-6, 55], [-6, 54], [-6.5, 53.5], [-6, 52.5], [-6.5, 52], [-8, 51.5],
-          [-9.5, 51.5], [-10, 51.5]
-        ],
-        // Germany, BeNeLux, Central Europe
-        centralEurope: [
-          [6, 54.5], [7, 53.5], [9, 54], [10, 54.5], [11, 54], [14, 54], [14.5, 53],
-          [14.5, 51], [15, 51], [15, 50], [12.5, 49], [13, 48.5], [12.5, 47.5],
-          [10, 47], [9, 47.5], [7.5, 47.5], [8, 49], [6, 49.5], [5, 50], [4, 51],
-          [4, 52], [5, 53], [6, 54.5]
-        ],
-        // Scandinavia - Norway
-        norway: [
-          [5, 58], [6, 58.5], [5.5, 59], [6, 60], [5, 61], [5.5, 62], [7, 62.5],
-          [8, 63], [9, 63.5], [10, 64], [12, 65], [14, 66], [15, 67], [16, 68],
-          [18, 69], [20, 70], [23, 70.5], [25, 71], [28, 71], [30, 70], [28, 69.5],
-          [26, 69], [24, 68.5], [20, 68], [18, 67], [17, 66], [16, 64], [14, 63],
-          [12, 62], [10, 61], [9, 60], [8, 59], [6.5, 58], [5, 58]
-        ],
-        // Sweden & Finland
-        swedenFinland: [
-          [11, 56], [12, 56], [14, 56], [16, 56.5], [18, 57], [19, 58], [18, 59],
-          [18, 60], [20, 60], [21, 61], [22, 62], [24, 63], [25, 64], [26, 65],
-          [27, 66], [28, 68], [29, 69], [30, 70], [28, 71], [25, 71], [24, 70],
-          [22, 69], [20, 68.5], [18, 68], [16, 66], [14, 64], [13, 62], [12, 60],
-          [12, 58], [11, 56]
-        ],
-        // Italy
-        italy: [
-          [7.5, 44], [8, 44], [8.5, 45.5], [11, 46.5], [13.5, 46.5], [13.5, 45.5],
-          [12.5, 45], [12.5, 44], [14, 42.5], [15.5, 42], [16, 41.5], [17, 41],
-          [18, 40.5], [18.5, 40], [17, 39], [16, 38.5], [15.5, 38], [16, 37.5],
-          [15, 36.5], [12.5, 37.5], [13, 38.5], [12.5, 39], [11, 40], [10, 42],
-          [9, 42], [8.5, 42.5], [9, 44], [7.5, 44]
-        ],
-        // Sicily
-        sicily: [
-          [12, 38], [13, 38.2], [15, 38], [15.5, 37.5], [15, 36.7], [12.5, 37],
-          [12, 38]
-        ],
-        // Balkans (Greece, Albania, Serbia, etc)
-        balkans: [
-          [14, 46], [16, 46], [19, 46], [21, 44], [23, 44], [23, 42], [26, 42],
-          [26, 41], [24, 40], [24, 38], [23, 37], [22, 36.5], [20, 36.5], [20, 38],
-          [19, 39], [20, 40], [19, 41.5], [19, 42], [17, 43], [16, 44], [14, 45],
-          [14, 46]
-        ],
-        // Turkey
-        turkey: [
-          [26, 41], [28, 41.5], [29, 41], [32, 42], [34, 42], [36, 41.5], [38, 40],
-          [40, 40], [42, 39], [44, 40], [44, 38], [42, 37], [36, 36.5], [35, 36],
-          [32, 36.5], [30, 36.5], [28, 36.5], [27, 37], [26, 38], [26, 41]
-        ],
-        // North Africa - Morocco to Egypt
-        northAfrica: [
-          [-17, 21], [-17, 28], [-13, 29], [-10, 30], [-8, 31.5], [-6, 33], [-5, 34],
-          [-5, 35.5], [-2, 35.5], [0, 35], [3, 37], [8, 37], [10, 37], [11, 33],
-          [10, 32], [12, 32], [15, 32], [20, 32], [25, 32], [25, 31.5], [32, 31.5],
-          [35, 31], [35, 29], [32, 24], [30, 22], [25, 22], [20, 20], [15, 21],
-          [10, 20], [5, 18], [0, 15], [-5, 15], [-10, 17], [-15, 19], [-17, 21]
-        ],
-        // Arabian Peninsula & Middle East
-        middleEast: [
-          [35, 31], [35, 33], [36, 34], [36, 35.5], [37, 36], [40, 37], [42, 37],
-          [45, 37], [48, 36], [50, 37], [52, 35], [54, 31], [56, 27], [56, 25],
-          [56, 22], [55, 18], [53, 16], [52, 15], [50, 15], [45, 13], [43, 13],
-          [43, 17], [42, 18], [40, 20], [39, 22], [38, 24], [35, 28], [35, 31]
-        ],
-        // Iceland
-        iceland: [
-          [-24, 64], [-22, 65.5], [-18, 66.5], [-14, 66], [-13.5, 65], [-14, 64.5],
-          [-17, 63.5], [-21, 63.5], [-24, 64]
-        ],
-        // Svalbard
-        svalbard: [
-          [10, 77], [15, 78], [20, 79.5], [25, 80], [28, 79], [25, 77.5], [18, 76.5],
-          [10, 77]
-        ],
-        // Eastern Europe (Poland, Ukraine, Belarus)
-        eastEurope: [
-          [14, 54], [18, 55], [22, 55], [24, 54], [24, 52], [28, 52], [32, 52],
-          [36, 50], [40, 48], [40, 46], [35, 46], [30, 46], [28, 48], [24, 49],
-          [22, 49], [20, 50], [18, 50], [15, 51], [14, 52], [14, 54]
-        ],
-        // Russia (western part visible)
-        russiaWest: [
-          [28, 71], [32, 70], [40, 68], [44, 68], [50, 67], [55, 68], [60, 70],
-          [68, 72], [68, 68], [60, 62], [55, 58], [50, 56], [45, 55], [40, 52],
-          [35, 50], [32, 52], [28, 52], [24, 54], [22, 55], [24, 58], [26, 60],
-          [28, 62], [30, 65], [30, 68], [28, 71]
-        ]
-      };
-
-      // Draw continents
-      ctx.save();
-      ctx.fillStyle = "rgba(0,217,255,0.05)";
-      ctx.strokeStyle = "rgba(0,217,255,0.18)";
-      ctx.lineWidth = 1.2;
-
-      function drawContinent(points) {
-        if(points.length < 2) return;
-        ctx.beginPath();
-        const start = project(points[0][1], points[0][0], w, h);
-        ctx.moveTo(start.x, start.y);
-        for(let i = 1; i < points.length; i++) {
-          const p = project(points[i][1], points[i][0], w, h);
-          ctx.lineTo(p.x, p.y);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-      }
-
-      Object.values(continents).forEach(drawContinent);
-      ctx.restore();
-
       // frame vignette
       ctx.save();
       const grd = ctx.createRadialGradient(w*0.50,h*0.50,Math.min(w,h)*0.10, w*0.50,h*0.50, Math.max(w,h)*0.80);
       grd.addColorStop(0,"rgba(0,0,0,0)");
-      grd.addColorStop(1,"rgba(0,0,0,0.35)");
+      grd.addColorStop(1,"rgba(0,0,0,0.45)");
       ctx.fillStyle = grd;
       ctx.fillRect(0,0,w,h);
       ctx.restore();
@@ -1120,7 +1053,81 @@
       // Using equirectangular projection: x = (lng+180)/360*w, y = (90-lat)/180*h
       const target = project(51, 10, w, h);
 
-      // particles move toward target
+      // Draw static data flow lines from each station to target (faint)
+      if(visibilityPhase >= 2) {
+        stations.forEach((s) => {
+          const st = stationState.get(s.id);
+          if(st.status === "offline") return;
+          const {x,y} = project(s.lat, s.lng, w, h);
+          ctx.save();
+          ctx.globalAlpha = 0.06;
+          ctx.strokeStyle = C.accent2;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(target.x, target.y);
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
+
+      // Animated data packets along the lines
+      if(visibilityPhase >= 2) {
+        stations.forEach((s, idx) => {
+          const st = stationState.get(s.id);
+          if(st.status === "offline") return;
+          const {x,y} = project(s.lat, s.lng, w, h);
+          const dx = target.x - x;
+          const dy = target.y - y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+
+          // Each station has its own phase offset
+          const duration = 3.0 + (idx % 5) * 0.5;
+          const delay = (idx * 0.2) % 3;
+          const progress = ((timeSec - delay) % duration) / duration;
+          if(progress < 0) return;
+
+          // Data packet position
+          const px = x + dx * progress;
+          const py = y + dy * progress;
+
+          // Gradient fade: start faint, peak in middle, fade at end
+          const fade = Math.sin(Math.PI * progress);
+          const color = (st.status === "warning" || st.status === "anomaly") ? C.warn : C.accent2;
+
+          // Draw glowing data packet
+          ctx.save();
+          ctx.globalAlpha = 0.7 * fade;
+          ctx.fillStyle = color;
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 8;
+          ctx.beginPath();
+          ctx.arc(px, py, 2.5, 0, Math.PI*2);
+          ctx.fill();
+          ctx.restore();
+
+          // Draw trail
+          const trailLen = 0.08;
+          const trailProgress = Math.max(0, progress - trailLen);
+          const tx = x + dx * trailProgress;
+          const ty = y + dy * trailProgress;
+
+          ctx.save();
+          const gradient = ctx.createLinearGradient(tx, ty, px, py);
+          gradient.addColorStop(0, "rgba(0,217,255,0)");
+          gradient.addColorStop(1, color);
+          ctx.globalAlpha = 0.5 * fade;
+          ctx.strokeStyle = gradient;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(px, py);
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
+
+      // particles move toward target (legacy particle system for extra effect)
       for(let i=particles.length-1; i>=0; i--){
         const p = particles[i];
         p.t += p.speed;
@@ -1369,8 +1376,8 @@
        Engine stats simulation
     ================================== */
     let train = 0;
-    let online = 47;
-    let dph = 2847291;
+    let online = 94;
+    let dph = 5847291;
     let patterns = 12847;
     let anomToday = 3;
     let lastUpdateMin = 2;
@@ -1410,7 +1417,7 @@
 
       // online can fluctuate slightly
       if(Math.random() < 0.18){
-        online = Math.max(44, Math.min(50, online + (Math.random()<0.6 ? 1 : -1)));
+        online = Math.max(90, Math.min(97, online + (Math.random()<0.6 ? 1 : -1)));
       }
 
       // anomalies today nudges slowly
@@ -1437,7 +1444,7 @@
     // 12s: loop-ish
     let visibilityPhase = 0;
 
-    const ANOMALY_STATION_ID = "iONE-046"; // North Sea Platform
+    const ANOMALY_STATION_ID = "iONE-033"; // Riyadh, SA
     const ANOMALY_PARAM = { name: "bearing_freq", sigma: +2.1 }; // (+2.1σ)
     const ANOMALY_VALUE_TEXT = "891 Hz";
     const ANOMALY_BASELINE_TEXT = "843 ± 12 Hz";
@@ -1446,7 +1453,7 @@
     function showAnomalyPopup(){
       // set popup fields
       popupTs.textContent = new Date().toLocaleTimeString();
-      pStation.textContent = `${ANOMALY_STATION_ID} North Sea`;
+      pStation.textContent = `${ANOMALY_STATION_ID} Riyadh, SA`;
       pParam.textContent = "bearing_freq";
       pValue.textContent = ANOMALY_VALUE_TEXT;
       pBase.textContent = ANOMALY_BASELINE_TEXT;

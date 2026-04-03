@@ -1,0 +1,1015 @@
+'use client';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import SlideNav from './components/SlideNav';
+import TerminalConfigurator from './components/TerminalConfigurator';
+import PrintableQuote from './components/PrintableQuote';
+import { getComponentById, getZoneExtras, calculateVolumeDiscount } from './data/component-catalog';
+
+interface ProductsShowcaseProps {
+  onComplete: () => void;
+  voiceEnabled: boolean;
+}
+
+type View = 'selection' | 'civil' | 'industrial';
+
+interface PVGISResult {
+  status: string;
+  location: {
+    address: string;
+    lat: number;
+    lon: number;
+    elevation: number;
+    zone: string;
+  };
+  consumption: {
+    daily: number;
+    yearly: number;
+    hourly: number;
+  };
+  solarData: {
+    source: string;
+    tracking: string;
+    database: string;
+    yearlyPerStation: number;
+    dailyAverage: number;
+  };
+  analysis: {
+    worstMonth: {
+      month: number;
+      monthName: string;
+      dailyProduction: number;
+      windProduction: number;
+      avgWind: number;
+      coverage: number;
+      coverageWithWind: number;
+      deficit: number;
+    };
+    bestMonth: {
+      month: number;
+      monthName: string;
+      dailyProduction: number;
+      surplus: number;
+    };
+    deficitMonths: number;
+    yearlyBalance: number;
+  };
+  solution: {
+    stations: number;
+    stationModel: string;
+    windTurbine: boolean;
+    windTurbineCount?: number;
+    windReason?: string;
+    windProduction?: { worst: number; avg: number };
+    battery: {
+      capacity: number;
+      modules: number;
+      technology: string;
+      reason: string;
+    };
+    warnings: string[];
+  };
+  pricing: {
+    bomCostUsd: number;
+    bomCostEur: number;
+    retailEstimateEur: {
+      low: number;
+      high: number;
+    };
+    breakdown: {
+      base: number;
+      battery: number;
+      wind: number;
+      thermal: number;
+    };
+    bom: Array<{
+      item: string;
+      qty: number;
+      unitPrice: number;
+      total: number;
+    }>;
+    note: string;
+  };
+  monthlyBreakdown: Array<{
+    month: number;
+    monthName: string;
+    solarProduction: number;
+    windProduction: number;
+    avgWindSpeed: number;
+    totalProduction: number;
+    consumption: number;
+    balance: number;
+    status: string;
+  }>;
+}
+
+const CLIMATE_ZONES = [
+  {
+    id: 'arctic',
+    name: 'ARCTIC',
+    tagline: 'Extreme Cold Operations',
+    temp: '-50°C to +35°C',
+    color: '#06B6D4',
+    productLine: 'iONE ARCTIC SHIELD',
+    image: '/M33.png',
+  },
+  {
+    id: 'continental',
+    name: 'CONTINENTAL',
+    tagline: 'Standard Industrial Edition',
+    temp: '-20°C to +45°C',
+    color: '#22C55E',
+    productLine: 'iONE CONTINENTAL',
+    image: '/M55.png',
+  },
+  {
+    id: 'desert',
+    name: 'DESERT',
+    tagline: 'Extreme Heat & Dust Protection',
+    temp: '-10°C to +60°C',
+    color: '#F59E0B',
+    productLine: 'iONE DESERT SHIELD',
+    image: '/M44.png',
+  },
+];
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export default function ProductsShowcase({ onComplete }: ProductsShowcaseProps) {
+  const [view, setView] = useState<View>('selection');
+  const [address, setAddress] = useState('');
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [pvgisResult, setPvgisResult] = useState<PVGISResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Configurator state
+  const [config, setConfig] = useState({
+    coordinates: '',
+    hourlyConsumption: '',
+    dailyConsumption: '',
+    voltageTypes: ['DC'] as string[],
+    voltageLevelDC: '48',
+    voltageLevelsAC: [] as string[],
+    peakPower: '',
+    components: 'EU' as 'EU' | 'World',
+    quantity: 1,
+  });
+
+  // Terminal & Quote states
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [showQuote, setShowQuote] = useState(false);
+
+  const selectedZoneData = CLIMATE_ZONES.find(z => z.id === selectedZone);
+
+  const handleAddressSubmit = async () => {
+    if (!address.trim()) return;
+
+    setIsSearching(true);
+    try {
+      const response = await fetch('/api/climate-zone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: address.trim() }),
+      });
+      const data = await response.json();
+      if (data.status === 'ok' && data.zone) {
+        setSelectedZone(data.zone);
+        setConfig(prev => ({ ...prev, coordinates: address.trim() }));
+      } else {
+        setSelectedZone('continental');
+      }
+    } catch {
+      setSelectedZone('continental');
+    }
+    setIsSearching(false);
+  };
+
+  // Calculate using PVGIS API
+  const handleCalculate = () => {
+    if (!config.dailyConsumption && !config.hourlyConsumption) return;
+    if (!config.coordinates) {
+      setError('Please enter installation location');
+      return;
+    }
+
+    setError(null);
+    // Show terminal configurator instead of direct API call
+    setShowTerminal(true);
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleTerminalComplete = (result: any) => {
+    setPvgisResult(result as PVGISResult);
+  };
+
+  const handleCloseTerminal = () => {
+    setShowTerminal(false);
+    if (pvgisResult) {
+      // Keep results visible after closing terminal
+    }
+  };
+
+  // Legacy direct API call (kept for reference)
+  const handleCalculateDirect = async () => {
+    if (!config.dailyConsumption && !config.hourlyConsumption) return;
+    if (!config.coordinates) {
+      setError('Please enter installation location');
+      return;
+    }
+
+    setIsCalculating(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/pvgis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: config.coordinates,
+          dailyConsumption: config.dailyConsumption ? parseFloat(config.dailyConsumption) : undefined,
+          hourlyConsumption: config.hourlyConsumption ? parseFloat(config.hourlyConsumption) : undefined,
+          zone: selectedZone,
+          peakPower: 4.32,
+          loss: 14,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'ok') {
+        setPvgisResult(result);
+      } else {
+        setError(result.message || 'Could not calculate. Check location.');
+      }
+    } catch {
+      setError('Connection error. Try again.');
+    }
+
+    setIsCalculating(false);
+  };
+
+  // Get zone-specific extras
+  const zoneExtras = selectedZone ? getZoneExtras(selectedZone) : [];
+  const extraComponents = zoneExtras.map(id => getComponentById(id)).filter(Boolean);
+
+  // Get components based on EU/World preference
+  const panelId = config.components === 'EU' ? 'PNL-HECKERT-720' : 'PNL-RISEN-720';
+  const mpptId = config.components === 'EU' ? 'MPPT-VERTIV-S48-3000E3' : 'MPPT-YSSC4875BG1';
+  const panel = getComponentById(panelId);
+  const mppt = getComponentById(mpptId);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-white z-50 flex flex-col overflow-hidden"
+    >
+      <div className={`flex-1 overflow-auto ${view === 'selection' ? '' : 'px-4 sm:px-10 py-2 pb-24'}`}>
+        <AnimatePresence mode="wait">
+          {/* SELECTION VIEW */}
+          {view === 'selection' && (
+            <motion.div
+              key="selection"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="h-full flex flex-col"
+            >
+              {/* Header - относительное позиционирование */}
+              <div className="text-center pt-8 sm:pt-12 pb-4 sm:pb-8">
+                <motion.h1
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-3xl sm:text-4xl poster-title-xl text-zinc-900"
+                >
+                  PRODUCTS
+                </motion.h1>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="text-zinc-500 text-base poster-body mt-2"
+                >
+                  Select your application
+                </motion.p>
+              </div>
+
+              {/* Main content - CSS Grid для Desktop, Flex для Mobile */}
+              <div className="flex-1 px-4 sm:px-8 pb-24">
+                {/* Desktop: 3 колонки */}
+                <div className="hidden sm:grid grid-cols-3 gap-8 h-full items-start pt-8 max-w-6xl mx-auto">
+
+                  {/* Civil - левая колонка */}
+                  <motion.div
+                    initial={{ opacity: 0, x: -30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="flex justify-center items-start"
+                  >
+                    <button
+                      onClick={() => setView('civil')}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-56 h-56 rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src="/products/D3.png"
+                          alt="Civil"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">CIVIL</span>
+                      <span className="text-zinc-500 text-xs poster-body">Home & Residential</span>
+                    </button>
+                  </motion.div>
+
+                  {/* RR2 - центральная колонка */}
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.35 }}
+                    className="flex justify-center items-center self-center"
+                  >
+                    <img
+                      src="/RR2.png"
+                      alt="iONE Station"
+                      className="w-full max-w-md h-auto object-contain"
+                    />
+                  </motion.div>
+
+                  {/* Industrial - правая колонка */}
+                  <motion.div
+                    initial={{ opacity: 0, x: 30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="flex justify-center items-start"
+                  >
+                    <button
+                      onClick={() => setView('industrial')}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-56 h-56 rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src="/a3.png"
+                          alt="Industrial"
+                          className="w-full h-full object-cover object-[57%_center] scale-[1.35] group-hover:scale-[1.4] transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">INDUSTRIAL</span>
+                      <span className="text-zinc-500 text-xs poster-body">Commercial & Infrastructure</span>
+                    </button>
+                  </motion.div>
+                </div>
+
+                {/* Mobile: вертикальный flex */}
+                <div className="sm:hidden flex flex-col items-center gap-8">
+                  {/* RR2 сверху на мобильном */}
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="w-48 h-48"
+                  >
+                    <img
+                      src="/RR2.png"
+                      alt="iONE Station"
+                      className="w-full h-full object-contain"
+                    />
+                  </motion.div>
+
+                  {/* Кнопки в ряд на мобильном */}
+                  <div className="flex gap-6">
+                    <motion.button
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      onClick={() => setView('civil')}
+                      className="flex flex-col items-center"
+                    >
+                      <div className="w-32 h-32 rounded-2xl overflow-hidden shadow-md">
+                        <img src="/products/D3.png" alt="Civil" className="w-full h-full object-cover" />
+                      </div>
+                      <span className="text-lg text-zinc-900 poster-title mt-2">CIVIL</span>
+                      <span className="text-zinc-500 text-[10px] poster-body">Home</span>
+                    </motion.button>
+
+                    <motion.button
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.4 }}
+                      onClick={() => setView('industrial')}
+                      className="flex flex-col items-center"
+                    >
+                      <div className="w-32 h-32 rounded-2xl overflow-hidden shadow-md">
+                        <img src="/a3.png" alt="Industrial" className="w-full h-full object-cover object-[57%_center] scale-[1.35]" />
+                      </div>
+                      <span className="text-lg text-zinc-900 poster-title mt-2">INDUSTRIAL</span>
+                      <span className="text-zinc-500 text-[10px] poster-body">Commercial</span>
+                    </motion.button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* CIVIL VIEW */}
+          {view === 'civil' && (
+            <motion.div
+              key="civil"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center min-h-full"
+            >
+              <motion.h1
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-4xl sm:text-5xl poster-title-xl text-zinc-900 mb-2"
+              >
+                iONE CIVIL
+              </motion.h1>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2 }}
+                className="text-zinc-500 text-lg mb-12 poster-body"
+              >
+                Home & Residential Solutions
+              </motion.p>
+
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.3 }}
+                className="w-48 h-48 sm:w-80 sm:h-80 bg-gradient-to-br from-emerald-100 to-emerald-200 rounded-xl sm:rounded-2xl flex items-center justify-center border-2 border-zinc-200"
+              >
+                <span className="text-7xl sm:text-9xl font-bold text-emerald-300">C</span>
+              </motion.div>
+
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.5 }}
+                className="text-zinc-400 text-center mt-6 sm:mt-8 max-w-md poster-body text-base sm:text-lg"
+              >
+                Coming soon
+              </motion.p>
+            </motion.div>
+          )}
+
+          {/* INDUSTRIAL VIEW - Zone Selection */}
+          {view === 'industrial' && !selectedZone && (
+            <motion.div
+              key="industrial-select"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              <motion.h1
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-4xl sm:text-5xl poster-title-xl text-zinc-900 mb-2"
+              >
+                iONE INDUSTRIAL
+              </motion.h1>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2 }}
+                className="text-zinc-500 text-lg mb-8 poster-body"
+              >
+                Three climate zones. One platform.
+              </motion.p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-12 mb-10 max-w-4xl mx-auto">
+                {CLIMATE_ZONES.map((zone, i) => (
+                  <motion.div
+                    key={zone.id}
+                    initial={{ opacity: 0, y: 30 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 + i * 0.1 }}
+                    className="flex justify-center"
+                  >
+                    <button
+                      onClick={() => setSelectedZone(zone.id)}
+                      className="group flex flex-col items-center"
+                    >
+                      <div className="w-44 h-44 sm:w-56 sm:h-56 rounded-2xl overflow-hidden shadow-lg">
+                        <img
+                          src={zone.image}
+                          alt={zone.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      </div>
+                      <span className="text-2xl text-zinc-900 poster-title tracking-wider mt-3">{zone.name}</span>
+                      <span className="text-zinc-500 text-xs poster-body">{zone.tagline}</span>
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.6 }}
+                className="max-w-2xl mx-auto w-full"
+              >
+                <label className="block text-zinc-500 text-sm mb-3 text-center poster-body">
+                  Or enter your location to find the right station
+                </label>
+                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddressSubmit()}
+                    placeholder="City, country or postal code..."
+                    className="flex-1 bg-zinc-100 border-2 border-zinc-200 rounded-xl px-4 sm:px-6 py-3 sm:py-4 text-zinc-900 placeholder-zinc-400 focus:border-cyan-500 focus:outline-none transition-colors"
+                  />
+                  <button
+                    onClick={handleAddressSubmit}
+                    disabled={isSearching || !address.trim()}
+                    className="px-6 sm:px-8 py-3 sm:py-4 bg-zinc-900 hover:bg-zinc-800 disabled:bg-zinc-300 disabled:text-zinc-500 text-white font-semibold rounded-xl transition-colors poster-body"
+                  >
+                    {isSearching ? 'Analyzing...' : 'Find'}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+
+          {/* INDUSTRIAL VIEW - Configurator */}
+          {view === 'industrial' && selectedZone && selectedZoneData && (
+            <motion.div
+              key="industrial-config"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col"
+            >
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 sm:mb-6 gap-2">
+                <div>
+                  <motion.h1
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-2xl sm:text-4xl poster-title-xl"
+                    style={{ color: selectedZoneData.color }}
+                  >
+                    {selectedZoneData.productLine}
+                  </motion.h1>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.1 }}
+                    className="text-zinc-500 text-sm sm:text-base poster-body"
+                  >
+                    {selectedZoneData.tagline} · {selectedZoneData.temp}
+                  </motion.p>
+                </div>
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  onClick={() => { setSelectedZone(null); setPvgisResult(null); setError(null); }}
+                  className="text-zinc-500 hover:text-zinc-700 text-sm poster-body flex items-center gap-1 self-start sm:self-auto"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                  Change Zone
+                </motion.button>
+              </div>
+
+              {/* Main Grid */}
+              <div className={`grid grid-cols-1 ${pvgisResult ? 'lg:grid-cols-3' : 'lg:grid-cols-2'} gap-4 sm:gap-6`}>
+
+                {/* Left: Station Card + Components */}
+                <motion.div
+                  initial={{ opacity: 0, x: -30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="space-y-4"
+                >
+                  {/* Station Image */}
+                  <div className="w-48 sm:w-56 rounded-2xl overflow-hidden shadow-lg">
+                    <img
+                      src={selectedZoneData.image}
+                      alt={selectedZoneData.name}
+                      className="w-full h-auto"
+                    />
+                  </div>
+
+                  {/* Zone Equipment - unified list */}
+                  <div className="bg-zinc-100 rounded-xl p-4 w-48 sm:w-56">
+                    <h4 className="text-sm font-semibold text-zinc-700 mb-2">Zone Equipment</h4>
+                    <div className="space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-zinc-600">{panel?.model.split(' ')[0]} 720W</span>
+                        <span className="text-zinc-400">{panel?.origin.toUpperCase()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-zinc-600">{mppt?.model}</span>
+                        <span className="text-zinc-400">{mppt?.origin.toUpperCase()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-zinc-600">2-axis Tracking ±0.1°</span>
+                        <span className="text-zinc-400">EU</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-zinc-600">SMU48B Controller</span>
+                        <span className="text-zinc-400">WORLD</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-zinc-600">Sensor Package</span>
+                        <span className="text-zinc-400">WORLD</span>
+                      </div>
+                      {extraComponents.map((comp) => (
+                        <div key={comp?.id} className="flex justify-between">
+                          <span className="text-zinc-600">{comp?.model.split(' ').slice(0, 2).join(' ')}</span>
+                          <span className="text-zinc-400">{comp?.origin.toUpperCase()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+
+                {/* Center: Configuration Form */}
+                <motion.div
+                  initial={{ opacity: 0, y: 30 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="space-y-3"
+                >
+                  {/* Location */}
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <input
+                      type="text"
+                      value={config.coordinates}
+                      onChange={(e) => setConfig(prev => ({ ...prev, coordinates: e.target.value }))}
+                      placeholder="Installation location..."
+                      className="w-full text-lg text-zinc-900 placeholder-zinc-300 focus:outline-none bg-transparent"
+                    />
+                  </div>
+
+                  {/* Energy card */}
+                  <div className="bg-white rounded-xl p-4 shadow-sm">
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Power</div>
+                        <div className="flex items-baseline gap-1">
+                          <input
+                            type="number"
+                            value={config.hourlyConsumption}
+                            onChange={(e) => {
+                              const power = e.target.value;
+                              const daily = power ? (parseFloat(power) * 24).toFixed(1) : '';
+                              setConfig(prev => ({ ...prev, hourlyConsumption: power, dailyConsumption: daily }));
+                            }}
+                            placeholder="—"
+                            className="w-full text-2xl font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent"
+                          />
+                          <span className="text-xs text-zinc-400">kW</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Daily</div>
+                        <div className="flex items-baseline gap-1">
+                          <input
+                            type="number"
+                            value={config.dailyConsumption}
+                            onChange={(e) => {
+                              const daily = e.target.value;
+                              const power = daily ? (parseFloat(daily) / 24).toFixed(2) : '';
+                              setConfig(prev => ({ ...prev, dailyConsumption: daily, hourlyConsumption: power }));
+                            }}
+                            placeholder="—"
+                            className="w-full text-2xl font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent"
+                          />
+                          <span className="text-xs text-zinc-400">kWh</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-zinc-400 uppercase tracking-wide mb-1">Peak</div>
+                        <div className="flex items-baseline gap-1">
+                          <input
+                            type="number"
+                            value={config.peakPower}
+                            onChange={(e) => setConfig(prev => ({ ...prev, peakPower: e.target.value }))}
+                            placeholder="—"
+                            className="w-full text-2xl font-light text-zinc-900 placeholder-zinc-200 focus:outline-none bg-transparent"
+                          />
+                          <span className="text-xs text-zinc-400">kW</span>
+                        </div>
+                      </div>
+                    </div>
+                    {config.peakPower && parseFloat(config.peakPower) > 5 && (
+                      <p className="text-amber-600 text-[10px] mt-2">High peak load → LTO battery</p>
+                    )}
+                  </div>
+
+                  {/* Output options - site style */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {['DC', 'AC'].map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setConfig(prev => ({
+                          ...prev,
+                          voltageTypes: prev.voltageTypes.includes(type)
+                            ? prev.voltageTypes.filter(t => t !== type)
+                            : [...prev.voltageTypes, type]
+                        }))}
+                        className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                          config.voltageTypes.includes(type)
+                            ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                            : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                    {config.voltageTypes.includes('DC') && (
+                      <>
+                        <span className="text-zinc-300 text-xs">·</span>
+                        {['12', '24', '48'].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => setConfig(prev => ({ ...prev, voltageLevelDC: v }))}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                              config.voltageLevelDC === v
+                                ? 'text-zinc-900'
+                                : 'text-zinc-400 hover:text-zinc-600'
+                            }`}
+                          >
+                            {v}V
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {config.voltageTypes.includes('AC') && (
+                      <>
+                        <span className="text-zinc-300 text-xs">·</span>
+                        {['110', '230', '400'].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => setConfig(prev => ({
+                              ...prev,
+                              voltageLevelsAC: prev.voltageLevelsAC.includes(v + 'V')
+                                ? prev.voltageLevelsAC.filter(x => x !== v + 'V')
+                                : [...prev.voltageLevelsAC, v + 'V']
+                            }))}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                              config.voltageLevelsAC.includes(v + 'V')
+                                ? 'text-zinc-900'
+                                : 'text-zinc-400 hover:text-zinc-600'
+                            }`}
+                          >
+                            {v}~
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    <span className="text-zinc-300 text-xs">·</span>
+                    {(['EU', 'World'] as const).map((origin) => (
+                      <button
+                        key={origin}
+                        onClick={() => setConfig(prev => ({ ...prev, components: origin }))}
+                        className={`px-3 py-1.5 rounded-full border text-xs font-medium tracking-wide transition-all duration-200 ${
+                          config.components === origin
+                            ? 'border-zinc-900 text-zinc-900 bg-zinc-900/5'
+                            : 'border-zinc-300 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700'
+                        }`}
+                      >
+                        {origin}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Error */}
+                  {error && (
+                    <div className="text-red-500 text-xs px-1">{error}</div>
+                  )}
+
+                  {/* Calculate - site style */}
+                  <div className="flex items-center justify-between pt-2">
+                    <p className="text-zinc-400 text-xs">
+                      PVGIS · 2-axis tracking
+                    </p>
+                    <button
+                      onClick={handleCalculate}
+                      disabled={isCalculating || (!config.dailyConsumption && !config.hourlyConsumption)}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 text-zinc-500 text-sm font-medium tracking-wide transition-all duration-200 hover:text-zinc-800 hover:border-zinc-400 hover:bg-zinc-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <span>{isCalculating ? 'Calculating...' : 'Calculate'}</span>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                      </svg>
+                    </button>
+                  </div>
+                </motion.div>
+
+                {/* Right: PVGIS Results */}
+                {pvgisResult && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 30 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="space-y-3"
+                  >
+                    {/* Main Result Card */}
+                    <div className="bg-white rounded-xl p-5 shadow-sm">
+                      {/* Station recommendation */}
+                      <div className="flex items-baseline gap-2 mb-4">
+                        <span className="text-3xl font-light text-zinc-900">
+                          {pvgisResult.solution.stations}×
+                        </span>
+                        <span className="text-lg text-zinc-600">
+                          {pvgisResult.solution.stationModel}
+                        </span>
+                      </div>
+
+                      {/* Key metrics */}
+                      <div className="grid grid-cols-3 gap-4 mb-4">
+                        <div>
+                          <div className="text-[10px] text-zinc-400 uppercase tracking-wide">Daily</div>
+                          <div className="text-xl font-light text-zinc-900">{pvgisResult.solarData.dailyAverage.toFixed(1)}</div>
+                          <div className="text-xs text-zinc-400">kWh</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-400 uppercase tracking-wide">Yearly</div>
+                          <div className="text-xl font-light text-zinc-900">{(pvgisResult.solarData.yearlyPerStation / 1000).toFixed(1)}</div>
+                          <div className="text-xs text-zinc-400">MWh</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-400 uppercase tracking-wide">Battery</div>
+                          <div className="text-xl font-light text-zinc-900">{pvgisResult.solution.battery.capacity.toFixed(1)}</div>
+                          <div className="text-xs text-zinc-400">kWh</div>
+                        </div>
+                      </div>
+
+                      {/* Battery detail */}
+                      <div className="text-xs text-zinc-500 mb-4">
+                        {pvgisResult.solution.battery.modules}× {pvgisResult.solution.battery.technology}
+                        {pvgisResult.solution.windTurbine && (
+                          <span className="ml-2 text-cyan-600">+ Wind</span>
+                        )}
+                      </div>
+
+                      {/* Monthly chart */}
+                      {pvgisResult.monthlyBreakdown && pvgisResult.monthlyBreakdown.length > 0 && (
+                      <div className="mb-4">
+                        <div className="flex items-end gap-0.5 h-16">
+                          {pvgisResult.monthlyBreakdown.map((m: { solarProduction: number; totalProduction: number; balance: number }, i: number) => {
+                            const maxProd = Math.max(...pvgisResult.monthlyBreakdown.map((x: { totalProduction: number }) => x.totalProduction), 1);
+                            const heightPx = Math.max((m.totalProduction / maxProd) * 64, 2); // 64px = h-16, min 2px
+                            const isDeficit = m.balance < 0;
+                            return (
+                              <div key={i} className="flex-1 flex flex-col justify-end items-center">
+                                <div
+                                  className="w-full rounded-sm transition-all"
+                                  style={{
+                                    height: `${heightPx}px`,
+                                    backgroundColor: isDeficit ? '#EF4444' : selectedZoneData.color,
+                                    opacity: isDeficit ? 0.5 : 0.7
+                                  }}
+                                  title={`${MONTH_NAMES[i]}: ${m.totalProduction.toFixed(1)} kWh/day`}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex justify-between text-[9px] text-zinc-400 mt-1">
+                          <span>J</span><span>F</span><span>M</span><span>A</span><span>M</span><span>J</span>
+                          <span>J</span><span>A</span><span>S</span><span>O</span><span>N</span><span>D</span>
+                        </div>
+                      </div>
+                      )}
+
+                      {/* Worst/Best inline */}
+                      <div className="flex justify-between text-xs border-t border-zinc-100 pt-3">
+                        <div>
+                          <span className="text-zinc-400">Worst </span>
+                          <span className="text-red-500">{pvgisResult.analysis.worstMonth.monthName}</span>
+                          <span className="text-zinc-400 ml-1">{pvgisResult.analysis.worstMonth.coverage.toFixed(0)}%</span>
+                        </div>
+                        <div>
+                          <span className="text-zinc-400">Best </span>
+                          <span className="text-emerald-500">{pvgisResult.analysis.bestMonth.monthName}</span>
+                          <span className="text-zinc-400 ml-1">+{pvgisResult.analysis.bestMonth.surplus.toFixed(0)}</span>
+                        </div>
+                      </div>
+
+                      {/* Warnings */}
+                      {pvgisResult.solution.warnings && pvgisResult.solution.warnings.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-amber-100">
+                          {pvgisResult.solution.warnings.map((w: string, i: number) => (
+                            <div key={i} className="text-amber-600 text-xs">⚠ {w}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Price */}
+                    <div className="bg-white rounded-xl p-4 shadow-sm">
+                      <div className="flex items-baseline justify-between">
+                        <div>
+                          <span className="text-2xl font-light text-zinc-900">€{pvgisResult.pricing.retailEstimateEur.low.toLocaleString()}</span>
+                          <span className="text-zinc-400 mx-1">–</span>
+                          <span className="text-2xl font-light text-zinc-900">€{pvgisResult.pricing.retailEstimateEur.high.toLocaleString()}</span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-400 mt-1">
+                        BOM ${pvgisResult.pricing.bomCostUsd.toLocaleString()} · site survey pricing
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setShowQuote(true)}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 text-zinc-500 text-sm font-medium tracking-wide transition-all duration-200 hover:text-zinc-800 hover:border-zinc-400 hover:bg-zinc-100"
+                      >
+                        <span>View Quote</span>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => setShowTerminal(true)}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-full border border-zinc-300 text-zinc-400 text-sm transition-all duration-200 hover:text-zinc-600 hover:border-zinc-400"
+                        title="Recalculate"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
+                      </button>
+                      <span className="text-zinc-300 text-xs ml-auto">{pvgisResult.location.address}</span>
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <SlideNav
+        onPrev={view !== 'selection' ? () => { setView('selection'); setSelectedZone(null); setPvgisResult(null); setError(null); } : undefined}
+        onBack={onComplete}
+        showPrev={view !== 'selection'}
+        showNext={false}
+        prevLabel="BACK"
+        isDark={false}
+      />
+
+      {/* Terminal Configurator */}
+      <AnimatePresence>
+        {showTerminal && selectedZone && (
+          <TerminalConfigurator
+            address={config.coordinates}
+            consumption={config.dailyConsumption ? parseFloat(config.dailyConsumption) : parseFloat(config.hourlyConsumption) * 24}
+            zone={selectedZone}
+            components={config.components}
+            peakPower={config.peakPower ? parseFloat(config.peakPower) : 0}
+            onComplete={handleTerminalComplete}
+            onClose={handleCloseTerminal}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Printable Quote Modal */}
+      <AnimatePresence>
+        {showQuote && pvgisResult && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/90 overflow-y-auto"
+          >
+            <div className="min-h-screen py-8">
+              <div className="max-w-4xl mx-auto">
+                <div className="flex justify-end mb-4 px-4 print:hidden">
+                  <button
+                    onClick={() => setShowQuote(false)}
+                    className="px-4 py-2 bg-zinc-700 text-white rounded hover:bg-zinc-600 mr-2"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-500 font-semibold"
+                  >
+                    Print
+                  </button>
+                </div>
+                <PrintableQuote data={pvgisResult} />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
