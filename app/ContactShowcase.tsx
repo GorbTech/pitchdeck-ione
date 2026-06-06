@@ -13,16 +13,21 @@ export default function ContactShowcase({ onComplete }: ContactShowcaseProps) {
   const [formData, setFormData] = useState({ name: '', email: '', message: '' });
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [formMountTime] = useState(() => Date.now());
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSending(true);
     try {
-      await fetch('/api/contact', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
+      // Backend reads multipart FormData (not JSON) + honeypot + timing.
+      const fd = new FormData();
+      fd.append('name', formData.name);
+      fd.append('email', formData.email);
+      fd.append('message', formData.message);
+      fd.append('website', ''); // honeypot: empty = human
+      fd.append('formMountTime', String(formMountTime));
+      const res = await fetch('/api/contact', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`contact failed: ${res.status}`);
       setSent(true);
       setFormData({ name: '', email: '', message: '' });
     } catch (err) {
